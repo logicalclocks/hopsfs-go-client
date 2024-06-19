@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strconv"
 
 	hdfs "github.com/colinmarc/hdfs/v2/internal/protocol/hadoop_hdfs"
 	"google.golang.org/protobuf/proto"
@@ -99,6 +101,9 @@ func readBlockOpResponse(r io.Reader) (*hdfs.BlockOpResponseProto, error) {
 	return resp, err
 }
 
+const HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE_ENV = "HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE"
+const HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE_ENV = "HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE"
+
 func getDatanodeAddress(datanode *hdfs.DatanodeIDProto, useHostname bool) string {
 	var host string
 	if useHostname {
@@ -106,6 +111,32 @@ func getDatanodeAddress(datanode *hdfs.DatanodeIDProto, useHostname bool) string
 	} else {
 		host = datanode.GetIpAddr()
 	}
+	port := datanode.GetXferPort()
 
-	return fmt.Sprintf("%s:%d", host, datanode.GetXferPort())
+	//Uncomment for debugging
+	//oldAdd := fmt.Sprintf("%s:%d", host, port)
+
+	hostOverride := os.Getenv(HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE_ENV)
+	portOverride := os.Getenv(HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE_ENV)
+
+	if hostOverride != "" {
+		host = hostOverride
+	}
+
+	if portOverride != "" {
+		i, err := strconv.ParseInt(portOverride, 10, 32)
+		if err != nil {
+			fmt.Printf("Bad override port. %s:%s", HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE_ENV, portOverride)
+			os.Exit(1)
+		}
+		port = uint32(i)
+	}
+
+	//Uncomment for debugging
+	//if portOverride != "" || hostOverride != "" {
+	//	newAdd := fmt.Sprintf("%s:%d", host, port)
+	//	fmt.Printf("Override Datanode address: %s with %s\n", oldAdd, newAdd)
+	//}
+
+	return fmt.Sprintf("%s:%d", host, port)
 }
