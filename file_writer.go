@@ -137,9 +137,17 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 	}
 	appendResp := &hdfs.AppendResponseProto{}
 
-	err = c.namenode.Execute("append", appendReq, appendResp)
-	if err != nil {
-		return nil, &os.PathError{Op: "append", Path: name, Err: interpretException(err)}
+	initDelay := time.Duration(100)
+	for i := 0; i < 9; i++ { // 1 min max
+		err = c.namenode.Execute("append", appendReq, appendResp)
+		if err != nil && strings.Contains(err.Error(), "NotReplicatedYetException") {
+			time.Sleep(initDelay * time.Millisecond)
+			initDelay *= 2
+		} else if err != nil {
+			return nil, &os.PathError{Op: "append", Path: name, Err: interpretException(err)}
+		} else {
+			break
+		}
 	}
 
 	var enc *transparentEncryptionInfo
