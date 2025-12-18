@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"sync"
+	"syscall"
 	"time"
 
 	hdfs "github.com/colinmarc/hdfs/v2/internal/protocol/hadoop_hdfs"
@@ -299,6 +300,10 @@ func (s *blockWriteStream) getAckError() error {
 	select {
 	case <-s.acksDone:
 		if s.ackError != nil {
+			// Check for datanode disk full error
+			if ae, ok := s.ackError.(ackError); ok && ae.status == hdfs.Status_ERROR_BLK_STORAGE_FULL {
+				return syscall.ENOSPC
+			}
 			return s.ackError
 		}
 	default:

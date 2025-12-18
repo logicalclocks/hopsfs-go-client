@@ -257,6 +257,8 @@ enum Status {
   OOB_RESERVED3 = 11;         // Reserved
   IN_PROGRESS = 12;
   ERROR_BLOCK_PINNED = 13;
+  ERROR_BLK_IN_COLD_STORAGE = 14;
+  ERROR_BLK_STORAGE_FULL = 15; // No more. See PipelineAck.StatusFormat. It uses 4 bits.
 }
 
 enum ShortCircuitFdResponse {

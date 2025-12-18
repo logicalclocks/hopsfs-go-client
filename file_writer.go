@@ -38,6 +38,7 @@ type FileWriter struct {
 	storeInDB       bool
 	smallFileBuffer []byte
 	pos             uint64
+	lastError       error
 
 	// Key and IV for transparent encryption support.
 	enc *transparentEncryptionInfo
@@ -243,7 +244,11 @@ func (f *FileWriter) Write(b []byte) (int, error) {
 			return len(b), err
 		}
 	} else {
-		return f.writeInternal(b)
+		n, err := f.writeInternal(b)
+		if err != nil {
+			f.lastError = err
+		}
+		return n, err
 	}
 }
 
@@ -301,6 +306,7 @@ func (f *FileWriter) Flush() error {
 		if len(f.smallFileBuffer) > 0 {
 			_, err := f.writeInternal(f.smallFileBuffer)
 			if err != nil {
+				f.lastError = err
 				return err
 			}
 			f.storeInDB = false
@@ -308,7 +314,11 @@ func (f *FileWriter) Flush() error {
 	}
 
 	if f.blockWriter != nil {
-		return f.blockWriter.Flush()
+		err := f.blockWriter.Flush()
+		if err != nil {
+			f.lastError = err
+			return err
+		}
 	}
 
 	return nil
@@ -353,6 +363,10 @@ func (f *FileWriter) Close() error {
 }
 
 func (f *FileWriter) closeInt() error {
+	if f.lastError != nil {
+		return f.lastError
+	}
+
 	var lastBlock *hdfs.ExtendedBlockProto = nil
 	if !f.storeInDB {
 		if f.blockWriter != nil {
