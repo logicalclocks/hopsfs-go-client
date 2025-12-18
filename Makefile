@@ -21,7 +21,7 @@ clean-protos:
 	find . -name *.pb.go | xargs rm
 
 hdfs: clean $(SOURCES)
-	go build -ldflags "-X main.version=$(TAG)" ./cmd/hdfs 
+	go build -ldflags "-X main.version=$(TAG)" ./cmd/hdfs
 
 test: hdfs
 	go test -v -race -timeout 60s ./...
