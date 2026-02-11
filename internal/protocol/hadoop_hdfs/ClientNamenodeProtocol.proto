@@ -85,6 +85,9 @@ message CreateRequestProto {
   optional FsPermissionProto unmasked = 9;
   optional string ecPolicyName = 10;
   optional string storagePolicy = 11;
+  //hopsfs
+  //optional EncodingPolicyProto policy = 12;
+  optional string groupname = 13;
 }
 
 message CreateResponseProto {
@@ -273,6 +276,8 @@ message MkdirsRequestProto {
   required FsPermissionProto masked = 2;
   required bool createParent = 3;
   optional FsPermissionProto unmasked = 4;
+  // Hdfs uses Fields upto 4
+  optional string groupname = 5;
 }
 message MkdirsResponseProto {
     required bool result = 1;

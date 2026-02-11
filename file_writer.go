@@ -73,6 +73,19 @@ func (c *Client) Create(name string) (*FileWriter, error) {
 // the way that HDFS writes are buffered and acknowledged asynchronously, it is
 // very important that Close is called after all data has been written.
 func (c *Client) CreateFile(name string, replication int, blockSize int64, perm os.FileMode, overwrite bool, createParent bool) (*FileWriter, error) {
+	return c.createFileWithGroup(name, replication, blockSize, perm, overwrite, createParent, "")
+}
+
+// CreateFileWithGroup opens a new file in HDFS with the given replication, block size,
+// permissions, and group name, and returns an io.WriteCloser for writing to it.
+// If groupname is empty, the file inherits the group from its parent directory.
+// Because of the way that HDFS writes are buffered and acknowledged asynchronously,
+// it is very important that Close is called after all data has been written.
+func (c *Client) CreateFileWithGroup(name string, replication int, blockSize int64, perm os.FileMode, overwrite bool, createParent bool, groupname string) (*FileWriter, error) {
+	return c.createFileWithGroup(name, replication, blockSize, perm, overwrite, createParent, groupname)
+}
+
+func (c *Client) createFileWithGroup(name string, replication int, blockSize int64, perm os.FileMode, overwrite bool, createParent bool, groupname string) (*FileWriter, error) {
 	createFlag := proto.Uint32(1)
 	if overwrite {
 		createFlag = proto.Uint32(3) // 0x01 for Create and 0x10 for overwrite
@@ -88,6 +101,12 @@ func (c *Client) CreateFile(name string, replication int, blockSize int64, perm 
 		BlockSize:             proto.Uint64(uint64(blockSize)),
 		CryptoProtocolVersion: []hdfs.CryptoProtocolVersionProto{hdfs.CryptoProtocolVersionProto_ENCRYPTION_ZONES},
 	}
+
+	// Set groupname if provided (non-empty)
+	if groupname != "" {
+		createReq.Groupname = proto.String(groupname)
+	}
+
 	createResp := &hdfs.CreateResponseProto{}
 
 	err := c.namenode.Execute("create", createReq, createResp)
