@@ -417,7 +417,7 @@ func (c *Client) fetchDataEncryptionKey() (*hdfs.DataEncryptionKeyProto, error) 
 
 	err := c.namenode.Execute("getDataEncryptionKey", req, resp)
 	if err != nil {
-		return nil, err
+		return nil, interpretException(err)
 	}
 
 	c.encryptionKey = resp.GetDataEncryptionKey()

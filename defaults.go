@@ -49,7 +49,7 @@ func (c *Client) fetchDefaults() (*hdfs.FsServerDefaultsProto, error) {
 
 	err := c.namenode.Execute("getServerDefaults", req, resp)
 	if err != nil {
-		return nil, err
+		return nil, interpretException(err)
 	}
 
 	c.defaults = resp.GetServerDefaults()

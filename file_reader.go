@@ -454,7 +454,7 @@ func (f *FileReader) getBlocks() error {
 
 	err := f.client.namenode.Execute("getBlockLocations", req, resp)
 	if err != nil {
-		return err
+		return &os.PathError{"open", f.name, interpretException(err)}
 	}
 
 	f.blocks = resp.GetLocations().GetBlocks()

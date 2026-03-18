@@ -23,7 +23,7 @@ func (c *Client) StatFs() (FsInfo, error) {
 
 	err := c.namenode.Execute("getFsStats", req, resp)
 	if err != nil {
-		return FsInfo{}, err
+		return FsInfo{}, interpretException(err)
 	}
 
 	var fs FsInfo
