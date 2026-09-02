@@ -308,6 +308,7 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 		Append:              true,
 		NewGS:               newGS,
 		UseDatanodeHostname: f.client.options.UseDatanodeHostname,
+		RemoteAccess:        f.client.options.RemoteAccess,
 		DialFunc:            dialFunc,
 	}
 
@@ -578,6 +579,7 @@ func (f *FileWriter) startNewBlock() error {
 		Block:               block,
 		BlockSize:           f.blockSize,
 		UseDatanodeHostname: f.client.options.UseDatanodeHostname,
+		RemoteAccess:        f.client.options.RemoteAccess,
 		DialFunc:            dialFunc,
 	}
 

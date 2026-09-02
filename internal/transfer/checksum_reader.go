@@ -19,6 +19,9 @@ type ChecksumReader struct {
 	// UseDatanodeHostname specifies whether the datanodes should be connected to
 	// via their hostnames (if true) or IP addresses (if false).
 	UseDatanodeHostname bool
+	// RemoteAccess specifies whether the datanodes should be connected to via the
+	// external addresses they publish (if true) or their in-cluster addresses.
+	RemoteAccess bool
 	// DialFunc is used to connect to the datanodes. If nil, then (&net.Dialer{}).DialContext is used
 	DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
@@ -41,7 +44,11 @@ func (cr *ChecksumReader) ReadChecksum() ([]byte, error) {
 		datanodes := make([]string, len(locs))
 		for i, loc := range locs {
 			dn := loc.GetId()
-			datanodes[i] = getDatanodeAddress(dn, cr.UseDatanodeHostname)
+			addr, err := getDatanodeAddress(dn, cr.UseDatanodeHostname, cr.RemoteAccess)
+			if err != nil {
+				return nil, err
+			}
+			datanodes[i] = addr
 		}
 
 		cr.datanodes = newDatanodeFailover(datanodes)

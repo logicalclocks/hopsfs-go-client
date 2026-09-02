@@ -139,6 +139,7 @@ func (f *FileReader) Checksum() ([]byte, error) {
 		cr := &transfer.ChecksumReader{
 			Block:               block,
 			UseDatanodeHostname: f.client.options.UseDatanodeHostname,
+			RemoteAccess:        f.client.options.RemoteAccess,
 			DialFunc:            d,
 		}
 
@@ -480,6 +481,7 @@ func (f *FileReader) getNewBlockReader() error {
 				Block:               block,
 				Offset:              int64(off - start),
 				UseDatanodeHostname: f.client.options.UseDatanodeHostname,
+				RemoteAccess:        f.client.options.RemoteAccess,
 				DialFunc:            dialFunc,
 			}
 

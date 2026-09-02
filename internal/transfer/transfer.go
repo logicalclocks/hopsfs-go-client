@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"strconv"
 
 	hdfs "github.com/colinmarc/hdfs/v2/internal/protocol/hadoop_hdfs"
 	"google.golang.org/protobuf/proto"
@@ -101,10 +99,17 @@ func readBlockOpResponse(r io.Reader) (*hdfs.BlockOpResponseProto, error) {
 	return resp, err
 }
 
-const HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE_ENV = "HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE"
-const HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE_ENV = "HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE"
+func getDatanodeAddress(datanode *hdfs.DatanodeIDProto, useHostname, remoteAccess bool) (string, error) {
+	if remoteAccess {
+		host := datanode.GetExternalHostName()
+		port := datanode.GetExternalXferPort()
+		if host == "" || port == 0 {
+			return "", fmt.Errorf("remote access is enabled but the namenode did not publish an external datanode address (datanode %s)",
+				datanode.GetDatanodeUuid())
+		}
+		return fmt.Sprintf("%s:%d", host, port), nil
+	}
 
-func getDatanodeAddress(datanode *hdfs.DatanodeIDProto, useHostname bool) string {
 	var host string
 	if useHostname {
 		host = datanode.GetHostName()
@@ -113,30 +118,5 @@ func getDatanodeAddress(datanode *hdfs.DatanodeIDProto, useHostname bool) string
 	}
 	port := datanode.GetXferPort()
 
-	//Uncomment for debugging
-	//oldAdd := fmt.Sprintf("%s:%d", host, port)
-
-	hostOverride := getEnv(HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE_ENV)
-	portOverride := getEnv(HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE_ENV)
-
-	if hostOverride != "" {
-		host = hostOverride
-	}
-
-	if portOverride != "" {
-		i, err := strconv.ParseInt(portOverride, 10, 32)
-		if err != nil {
-			fmt.Printf("Bad override port. %s:%s", HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE_ENV, portOverride)
-			os.Exit(1)
-		}
-		port = uint32(i)
-	}
-
-	//Uncomment for debugging
-	//if portOverride != "" || hostOverride != "" {
-	//	newAdd := fmt.Sprintf("%s:%d", host, port)
-	//	fmt.Printf("Override Datanode address: %s with %s\n", oldAdd, newAdd)
-	//}
-
-	return fmt.Sprintf("%s:%d", host, port)
+	return fmt.Sprintf("%s:%d", host, port), nil
 }

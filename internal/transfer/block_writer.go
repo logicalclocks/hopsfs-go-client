@@ -42,6 +42,9 @@ type BlockWriter struct {
 	// UseDatanodeHostname indicates whether the datanodes will be connected to
 	// via hostname (if true) or IP address (if false).
 	UseDatanodeHostname bool
+	// RemoteAccess indicates whether the datanodes will be connected to via the
+	// external addresses they publish (if true) or their in-cluster addresses.
+	RemoteAccess bool
 	// DialFunc is used to connect to the datanodes. If nil, then
 	// (&net.Dialer{}).DialContext is used.
 	DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -129,7 +132,10 @@ func (bw *BlockWriter) Close() error {
 }
 
 func (bw *BlockWriter) connectNext() error {
-	address := getDatanodeAddress(bw.currentPipeline()[0].GetId(), bw.UseDatanodeHostname)
+	address, err := getDatanodeAddress(bw.currentPipeline()[0].GetId(), bw.UseDatanodeHostname, bw.RemoteAccess)
+	if err != nil {
+		return err
+	}
 
 	if bw.DialFunc == nil {
 		bw.DialFunc = (&net.Dialer{}).DialContext

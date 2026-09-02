@@ -943,12 +943,14 @@ type DatanodeIDProto struct {
 	// upgraded clusters this is the same
 	// as the original StorageID of the
 	// Datanode.
-	XferPort       *uint32 `protobuf:"varint,4,req,name=xferPort" json:"xferPort,omitempty"`                   // data streaming port
-	InfoPort       *uint32 `protobuf:"varint,5,req,name=infoPort" json:"infoPort,omitempty"`                   // datanode http port
-	IpcPort        *uint32 `protobuf:"varint,6,req,name=ipcPort" json:"ipcPort,omitempty"`                     // ipc server port
-	InfoSecurePort *uint32 `protobuf:"varint,7,opt,name=infoSecurePort,def=0" json:"infoSecurePort,omitempty"` // datanode https port
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	XferPort         *uint32 `protobuf:"varint,4,req,name=xferPort" json:"xferPort,omitempty"`                   // data streaming port
+	InfoPort         *uint32 `protobuf:"varint,5,req,name=infoPort" json:"infoPort,omitempty"`                   // datanode http port
+	IpcPort          *uint32 `protobuf:"varint,6,req,name=ipcPort" json:"ipcPort,omitempty"`                     // ipc server port
+	InfoSecurePort   *uint32 `protobuf:"varint,7,opt,name=infoSecurePort,def=0" json:"infoSecurePort,omitempty"` // datanode https port
+	ExternalHostName *string `protobuf:"bytes,8,opt,name=externalHostName" json:"externalHostName,omitempty"`    // public DNS or IP, may differ from hostName
+	ExternalXferPort *uint32 `protobuf:"varint,9,opt,name=externalXferPort" json:"externalXferPort,omitempty"`   // external data streaming port, may differ from xferPort (NLB multiplexing)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 // Default values for DatanodeIDProto fields.
@@ -1033,6 +1035,20 @@ func (x *DatanodeIDProto) GetInfoSecurePort() uint32 {
 		return *x.InfoSecurePort
 	}
 	return Default_DatanodeIDProto_InfoSecurePort
+}
+
+func (x *DatanodeIDProto) GetExternalHostName() string {
+	if x != nil && x.ExternalHostName != nil {
+		return *x.ExternalHostName
+	}
+	return ""
+}
+
+func (x *DatanodeIDProto) GetExternalXferPort() uint32 {
+	if x != nil && x.ExternalXferPort != nil {
+		return *x.ExternalXferPort
+	}
+	return 0
 }
 
 // *
@@ -4702,7 +4718,7 @@ const file_hdfs_proto_rawDesc = "" +
 	"\x04path\x18\x01 \x02(\tR\x04path\x12\x16\n" +
 	"\x06offset\x18\x02 \x02(\x03R\x06offset\x12\x16\n" +
 	"\x06length\x18\x03 \x02(\x03R\x06length\x12\x14\n" +
-	"\x05nonce\x18\x04 \x02(\fR\x05nonce\"\xe6\x01\n" +
+	"\x05nonce\x18\x04 \x02(\fR\x05nonce\"\xbe\x02\n" +
 	"\x0fDatanodeIDProto\x12\x16\n" +
 	"\x06ipAddr\x18\x01 \x02(\tR\x06ipAddr\x12\x1a\n" +
 	"\bhostName\x18\x02 \x02(\tR\bhostName\x12\"\n" +
@@ -4710,7 +4726,9 @@ const file_hdfs_proto_rawDesc = "" +
 	"\bxferPort\x18\x04 \x02(\rR\bxferPort\x12\x1a\n" +
 	"\binfoPort\x18\x05 \x02(\rR\binfoPort\x12\x18\n" +
 	"\aipcPort\x18\x06 \x02(\rR\aipcPort\x12)\n" +
-	"\x0einfoSecurePort\x18\a \x01(\r:\x010R\x0einfoSecurePort\"\x80\x01\n" +
+	"\x0einfoSecurePort\x18\a \x01(\r:\x010R\x0einfoSecurePort\x12*\n" +
+	"\x10externalHostName\x18\b \x01(\tR\x10externalHostName\x12*\n" +
+	"\x10externalXferPort\x18\t \x01(\rR\x10externalXferPort\"\x80\x01\n" +
 	"\x16DatanodeLocalInfoProto\x12(\n" +
 	"\x0fsoftwareVersion\x18\x01 \x02(\tR\x0fsoftwareVersion\x12$\n" +
 	"\rconfigVersion\x18\x02 \x02(\tR\rconfigVersion\x12\x16\n" +

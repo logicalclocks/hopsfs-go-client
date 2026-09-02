@@ -7702,18 +7702,20 @@ func (x *GetDataEncryptionKeyResponseProto) GetDataEncryptionKey() *DataEncrypti
 }
 
 type ActiveNodeProto struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	Id               *int64                 `protobuf:"varint,1,opt,name=id" json:"id,omitempty"`
-	RpcHostname      *string                `protobuf:"bytes,2,opt,name=rpcHostname" json:"rpcHostname,omitempty"`
-	RpcIpAddress     *string                `protobuf:"bytes,3,opt,name=rpcIpAddress" json:"rpcIpAddress,omitempty"`
-	RpcPort          *int32                 `protobuf:"varint,4,opt,name=rpcPort" json:"rpcPort,omitempty"`
-	ServiceIpAddress *string                `protobuf:"bytes,5,opt,name=serviceIpAddress" json:"serviceIpAddress,omitempty"`
-	ServicePort      *int32                 `protobuf:"varint,6,opt,name=servicePort" json:"servicePort,omitempty"`
-	HttpAddress      *string                `protobuf:"bytes,7,opt,name=httpAddress" json:"httpAddress,omitempty"`
-	LocationDomainId *int32                 `protobuf:"varint,8,opt,name=locationDomainId" json:"locationDomainId,omitempty"`
-	extensionFields  protoimpl.ExtensionFields
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Id                  *int64                 `protobuf:"varint,1,opt,name=id" json:"id,omitempty"`
+	RpcHostname         *string                `protobuf:"bytes,2,opt,name=rpcHostname" json:"rpcHostname,omitempty"`
+	RpcIpAddress        *string                `protobuf:"bytes,3,opt,name=rpcIpAddress" json:"rpcIpAddress,omitempty"`
+	RpcPort             *int32                 `protobuf:"varint,4,opt,name=rpcPort" json:"rpcPort,omitempty"`
+	ServiceIpAddress    *string                `protobuf:"bytes,5,opt,name=serviceIpAddress" json:"serviceIpAddress,omitempty"`
+	ServicePort         *int32                 `protobuf:"varint,6,opt,name=servicePort" json:"servicePort,omitempty"`
+	HttpAddress         *string                `protobuf:"bytes,7,opt,name=httpAddress" json:"httpAddress,omitempty"`
+	LocationDomainId    *int32                 `protobuf:"varint,8,opt,name=locationDomainId" json:"locationDomainId,omitempty"`
+	ExternalRpcHostname *string                `protobuf:"bytes,10,opt,name=externalRpcHostname" json:"externalRpcHostname,omitempty"` // public DNS or IP for client RPC
+	ExternalRpcPort     *int32                 `protobuf:"varint,11,opt,name=externalRpcPort" json:"externalRpcPort,omitempty"`        // external client RPC port, may differ from rpcPort (NLB multiplexing)
+	extensionFields     protoimpl.ExtensionFields
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ActiveNodeProto) Reset() {
@@ -7798,6 +7800,20 @@ func (x *ActiveNodeProto) GetHttpAddress() string {
 func (x *ActiveNodeProto) GetLocationDomainId() int32 {
 	if x != nil && x.LocationDomainId != nil {
 		return *x.LocationDomainId
+	}
+	return 0
+}
+
+func (x *ActiveNodeProto) GetExternalRpcHostname() string {
+	if x != nil && x.ExternalRpcHostname != nil {
+		return *x.ExternalRpcHostname
+	}
+	return ""
+}
+
+func (x *ActiveNodeProto) GetExternalRpcPort() int32 {
+	if x != nil && x.ExternalRpcPort != nil {
+		return *x.ExternalRpcPort
 	}
 	return 0
 }
@@ -9530,7 +9546,7 @@ const file_ClientNamenodeProtocol_proto_rawDesc = "" +
 	"!SetBalancerBandwidthResponseProto\"\"\n" +
 	" GetDataEncryptionKeyRequestProto\"v\n" +
 	"!GetDataEncryptionKeyResponseProto\x12Q\n" +
-	"\x11dataEncryptionKey\x18\x01 \x01(\v2#.hadoop.hdfs.DataEncryptionKeyProtoR\x11dataEncryptionKey\"\xa3\x02\n" +
+	"\x11dataEncryptionKey\x18\x01 \x01(\v2#.hadoop.hdfs.DataEncryptionKeyProtoR\x11dataEncryptionKey\"\xff\x02\n" +
 	"\x0fActiveNodeProto\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12 \n" +
 	"\vrpcHostname\x18\x02 \x01(\tR\vrpcHostname\x12\"\n" +
@@ -9539,7 +9555,10 @@ const file_ClientNamenodeProtocol_proto_rawDesc = "" +
 	"\x10serviceIpAddress\x18\x05 \x01(\tR\x10serviceIpAddress\x12 \n" +
 	"\vservicePort\x18\x06 \x01(\x05R\vservicePort\x12 \n" +
 	"\vhttpAddress\x18\a \x01(\tR\vhttpAddress\x12*\n" +
-	"\x10locationDomainId\x18\b \x01(\x05R\x10locationDomainId*\x04\b\t\x10\n" +
+	"\x10locationDomainId\x18\b \x01(\x05R\x10locationDomainId\x120\n" +
+	"\x13externalRpcHostname\x18\n" +
+	" \x01(\tR\x13externalRpcHostname\x12(\n" +
+	"\x0fexternalRpcPort\x18\v \x01(\x05R\x0fexternalRpcPort*\x04\b\t\x10\n" +
 	"\" \n" +
 	"\x1eActiveNamenodeListRequestProto\"]\n" +
 	"\x1fActiveNamenodeListResponseProto\x12:\n" +
