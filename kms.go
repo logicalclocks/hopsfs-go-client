@@ -10,9 +10,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 
@@ -24,6 +26,27 @@ const (
 	kmsSchemeHTTP  = "kms://http@"
 	kmsSchemeHTTPS = "kms://https@"
 )
+
+// newKMSHTTPClient returns the client used for KMS calls. It never uses a proxy,
+// whatever HTTP_PROXY and HTTPS_PROXY say: the KMS is reached directly, like the
+// namenodes, and a process that sets those variables for its own outbound traffic
+// would otherwise send key requests to an egress proxy with no route to the KMS.
+// The other settings match http.DefaultTransport.
+func newKMSHTTPClient(jar http.CookieJar) *http.Client {
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	return &http.Client{Jar: jar, Transport: transport}
+}
 
 func (c *Client) kmsAuth(url string) error {
 	if c.options.KerberosClient == nil {

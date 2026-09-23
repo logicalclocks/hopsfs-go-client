@@ -285,10 +285,7 @@ func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress str
 		return nil, errors.New("cant create cookie jar")
 	}
 
-	// Not extending ClientOptions to preserve compatibility, so timeouts not configured.
-	httpClient := &http.Client{Jar: jar}
-
-	c := &Client{namenode: namenodeConn, leaderNamenode: leaderConn, options: options, http: httpClient}
+	c := &Client{namenode: namenodeConn, leaderNamenode: leaderConn, options: options, http: newKMSHTTPClient(jar)}
 
 	// set epoch
 	_ = c.setEpoch()
