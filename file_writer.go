@@ -370,6 +370,19 @@ func (f *FileWriter) Write(b []byte) (int, error) {
 }
 
 func (f *FileWriter) writeInternal(b []byte) (int, error) {
+	// A zero-length write must not allocate a block. Without this guard the
+	// code below calls startNewBlock() -> addBlock on the NameNode before it
+	// looks at len(b); with no bytes to write, BlockWriter.Write (and thus the
+	// datanode connection) is never invoked, leaving a phantom block allocated
+	// at the NameNode with numBytes=0. On a cloud cluster with
+	// numCommittedAllowed>0 the NameNode completes that block as
+	// cloud_upload_pending even though no datanode ever received it, and the
+	// ProvidedBlocksChecker later flags it as data loss. Writing nothing must
+	// be a no-op, matching the Java client (whose DataStreamer allocates the
+	// next block lazily, only when a data packet for it exists).
+	if len(b) == 0 {
+		return 0, nil
+	}
 	if f.blockWriter == nil {
 		err := f.startNewBlock()
 		if err != nil {
