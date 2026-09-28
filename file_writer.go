@@ -3,6 +3,7 @@ package hdfs
 import (
 	"crypto/cipher"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -14,7 +15,19 @@ import (
 
 const MaxSmallFileSize = 1024 * 64
 
+// defaultBlockWriteRetries mirrors the Java client's default for
+// dfs.client.block.write.retries: after a datanode refuses to open a block,
+// abandon it and ask the namenode for a new block up to this many times.
+const defaultBlockWriteRetries = 3
+
 var ErrReplicating = errors.New("replication in progress")
+
+// namenodeRPC is the part of the namenode connection a FileWriter uses. It
+// is an interface so the writer's block-allocation logic can be tested
+// against a fake namenode.
+type namenodeRPC interface {
+	Execute(method string, req proto.Message, resp proto.Message) error
+}
 
 // IsErrReplicating returns true if the passed error is an os.PathError wrapping
 // ErrReplicating.
@@ -33,12 +46,29 @@ type FileWriter struct {
 	blockSize   int64
 	fileId      *uint64
 
+	// nn is the namenode connection used for block allocation and completion;
+	// it is client.namenode except in tests.
+	nn namenodeRPC
+
 	blockWriter     *transfer.BlockWriter
 	deadline        time.Time
 	storeInDB       bool
 	smallFileBuffer []byte
 	pos             uint64
 	lastError       error
+
+	// prevBlock is the last block of the file before blockWriter's block, i.e.
+	// the `previous` argument that allocated blockWriter's block. It is what a
+	// replacement block is allocated after when blockWriter's block is
+	// abandoned.
+	prevBlock *hdfs.ExtendedBlockProto
+	// excludedNodes are datanodes that refused to open a block of this file.
+	// They are passed to the namenode on every later addBlock so the
+	// replacement block lands elsewhere (Java: DataStreamer.excludedNodes).
+	excludedNodes []*hdfs.DatanodeInfoProto
+	// blockSetupFailures counts the consecutive attempts to open the current
+	// block that a datanode refused; it is compared with BlockWriteRetries.
+	blockSetupFailures int
 	// newGS is the bumped generation stamp returned by
 	// updateBlockForPipeline during Append(). It is the GS the DN
 	// finalized at, so the `complete` RPC must report this value as the
@@ -135,6 +165,7 @@ func (c *Client) createFileWithGroup(name string, replication int, blockSize int
 
 	return &FileWriter{
 		client:          c,
+		nn:              c.namenode,
 		name:            name,
 		replication:     replication,
 		blockSize:       blockSize,
@@ -204,6 +235,7 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 
 	f := &FileWriter{
 		client:          c,
+		nn:              c.namenode,
 		name:            name,
 		replication:     int(appendResp.Stat.GetBlockReplication()),
 		blockSize:       int64(appendResp.Stat.GetBlocksize()),
@@ -350,6 +382,12 @@ func (f *FileWriter) SetDeadline(t time.Time) error {
 // of this, it is important that Close is called after all data has been
 // written.
 func (f *FileWriter) Write(b []byte) (int, error) {
+	// Like the Java DFSOutputStream, a writer that has failed stays failed:
+	// the data it could not write is gone and Close will report the error.
+	if f.lastError != nil {
+		return 0, f.lastError
+	}
+
 	if f.storeInDB {
 		f.smallFileBuffer = append(f.smallFileBuffer, b...)
 		if len(f.smallFileBuffer) <= MaxSmallFileSize {
@@ -357,6 +395,12 @@ func (f *FileWriter) Write(b []byte) (int, error) {
 		} else { // we have exceeded small file limit
 			f.storeInDB = false
 			_, err := f.writeInternal(f.smallFileBuffer)
+			if err != nil {
+				// The buffered data was not written; Close must not
+				// complete the file (with a dead block, or with no block
+				// and no data, which would finalize it at 0 bytes).
+				f.lastError = err
+			}
 			// we already acked for some data in the previous return statements
 			return len(b), err
 		}
@@ -407,6 +451,15 @@ func (f *FileWriter) writeInternal(b []byte) (int, error) {
 		}
 
 		if err != nil {
+			if f.canRetryBlockSetup(n) {
+				// The datanode refused to open the block and nothing was
+				// sent: abandon it and get a block elsewhere, then retry
+				// the same bytes (off is unchanged since n == 0).
+				if rerr := f.replaceRefusedBlock(err); rerr != nil {
+					return off, rerr
+				}
+				continue
+			}
 			return off, err
 		}
 	}
@@ -414,10 +467,115 @@ func (f *FileWriter) writeInternal(b []byte) (int, error) {
 	return off, nil
 }
 
+// canRetryBlockSetup reports whether the last block write failed before any
+// data was sent to a fresh (not appended) block, so the block can be
+// abandoned and retried elsewhere. The retry budget is checked in
+// replaceRefusedBlock.
+func (f *FileWriter) canRetryBlockSetup(n int) bool {
+	bw := f.blockWriter
+	return n == 0 && bw != nil && bw.SetupFailed() && !bw.Append
+}
+
+// blockWriteRetries returns the retry budget per block: the option's value,
+// defaultBlockWriteRetries when it is unset (zero), and no retries when it
+// is negative.
+func (f *FileWriter) blockWriteRetries() int {
+	retries := f.client.options.BlockWriteRetries
+	if retries == 0 {
+		return defaultBlockWriteRetries
+	}
+	if retries < 0 {
+		return 0
+	}
+	return retries
+}
+
+// replaceRefusedBlock is the Go counterpart of the retry loop in the Java
+// DataStreamer.nextBlockOutputStream: the block the current blockWriter could
+// not open is abandoned on the namenode, the datanode blamed for the failure
+// is added to the excluded set, and a new block is allocated after prevBlock
+// with those nodes excluded.
+func (f *FileWriter) replaceRefusedBlock(cause error) error {
+	bw := f.blockWriter
+	refused := bw.Block.GetB()
+	badNode := bw.FailedDatanode()
+	f.blockWriter = nil
+
+	abandonErr := f.abandonBlock(refused)
+	if abandonErr != nil {
+		return &os.PathError{Op: "create", Path: f.name, Err: fmt.Errorf(
+			"block %d refused by datanode %s: %v; abandoning it failed: %w",
+			refused.GetBlockId(), datanodeName(badNode), cause, abandonErr)}
+	}
+
+	// Past the (absolute) deadline a retry can only time out again, and the
+	// datanode is not to blame.
+	if !f.deadline.IsZero() && !time.Now().Before(f.deadline) {
+		return &os.PathError{Op: "create", Path: f.name, Err: cause}
+	}
+
+	f.excludeDatanode(badNode)
+	f.blockSetupFailures++
+	retries := f.blockWriteRetries()
+	if f.blockSetupFailures > retries {
+		return &os.PathError{Op: "create", Path: f.name, Err: fmt.Errorf(
+			"unable to create new block after %d attempts (excluded datanodes: %s): %w",
+			f.blockSetupFailures, f.excludedDatanodeNames(), cause)}
+	}
+
+	return f.newBlock(f.prevBlock)
+}
+
+func (f *FileWriter) excludeDatanode(node *hdfs.DatanodeInfoProto) {
+	if node == nil {
+		return
+	}
+	for _, n := range f.excludedNodes {
+		if n.GetId().GetDatanodeUuid() == node.GetId().GetDatanodeUuid() {
+			return
+		}
+	}
+	f.excludedNodes = append(f.excludedNodes, node)
+}
+
+func (f *FileWriter) excludedDatanodeNames() string {
+	names := make([]string, 0, len(f.excludedNodes))
+	for _, n := range f.excludedNodes {
+		names = append(names, datanodeName(n))
+	}
+	return strings.Join(names, ", ")
+}
+
+func datanodeName(node *hdfs.DatanodeInfoProto) string {
+	if node == nil {
+		return "<unknown>"
+	}
+	id := node.GetId()
+	return fmt.Sprintf("%s:%d (%s)", id.GetIpAddr(), id.GetXferPort(), id.GetDatanodeUuid())
+}
+
+func (f *FileWriter) abandonBlock(block *hdfs.ExtendedBlockProto) error {
+	req := &hdfs.AbandonBlockRequestProto{
+		B:      block,
+		Src:    proto.String(f.name),
+		Holder: proto.String(f.client.namenode.ClientName),
+	}
+	resp := &hdfs.AbandonBlockResponseProto{}
+	err := f.nn.Execute("abandonBlock", req, resp)
+	if err != nil {
+		return interpretException(err)
+	}
+	return nil
+}
+
 // Flush flushes any buffered data out to the datanodes. Even immediately after
 // a call to Flush, it is still necessary to call Close once all data has been
 // written.
 func (f *FileWriter) Flush() error {
+	if f.lastError != nil {
+		return f.lastError
+	}
+
 	// if we have buffered some data then we need to write it first
 	if f.storeInDB {
 		if len(f.smallFileBuffer) > 0 {
@@ -529,7 +687,7 @@ func (f *FileWriter) closeInt() error {
 
 	sleep := time.Duration(100)
 	for i := 0; i < 10; i++ {
-		err := f.client.namenode.Execute("complete", completeReq, completeResp)
+		err := f.nn.Execute("complete", completeReq, completeResp)
 		if err != nil {
 			return &os.PathError{Op: "create", Path: f.name, Err: interpretException(err)}
 		}
@@ -561,10 +719,20 @@ func (f *FileWriter) startNewBlock() error {
 		}
 	}
 
+	// A new block gets a fresh retry budget
+	f.blockSetupFailures = 0
+	return f.newBlock(previous)
+}
+
+// newBlock allocates the next block of the file after previous (nil for the
+// first block), excluding any datanodes that refused earlier blocks, and
+// points blockWriter at it.
+func (f *FileWriter) newBlock(previous *hdfs.ExtendedBlockProto) error {
 	addBlockResp, err := f.addBlockWithRetry(previous)
 	if err != nil {
 		return &os.PathError{Op: "create", Path: f.name, Err: interpretException(err)}
 	}
+	f.prevBlock = previous
 
 	block := addBlockResp.GetBlock()
 	dialFunc, err := f.client.wrapDatanodeDial(
@@ -586,9 +754,10 @@ func (f *FileWriter) startNewBlock() error {
 
 func (f *FileWriter) addBlockWithRetry(previous *hdfs.ExtendedBlockProto) (*hdfs.AddBlockResponseProto, error) {
 	addBlockReq := &hdfs.AddBlockRequestProto{
-		Src:        proto.String(f.name),
-		ClientName: proto.String(f.client.namenode.ClientName),
-		Previous:   previous,
+		Src:          proto.String(f.name),
+		ClientName:   proto.String(f.client.namenode.ClientName),
+		Previous:     previous,
+		ExcludeNodes: f.excludedNodes,
 	}
 
 	addBlockResp := &hdfs.AddBlockResponseProto{}
@@ -596,7 +765,7 @@ func (f *FileWriter) addBlockWithRetry(previous *hdfs.ExtendedBlockProto) (*hdfs
 	var err error = nil
 
 	for i := 0; i < 8; i++ { // 8 --> ~9.3 min
-		err = f.client.namenode.Execute("addBlock", addBlockReq, addBlockResp)
+		err = f.nn.Execute("addBlock", addBlockReq, addBlockResp)
 		if err != nil && strings.Contains(err.Error(), "NotReplicatedYetException") {
 			time.Sleep(initDelay * time.Millisecond)
 			initDelay *= 2

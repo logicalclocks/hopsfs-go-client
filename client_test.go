@@ -36,6 +36,19 @@ func getClientForUser(t *testing.T, username string) *Client {
 		return c
 	}
 
+	client, err := NewClient(getClientOptionsForUser(t, username))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cachedClients[username] = client
+	return client
+}
+
+// getClientOptionsForUser loads the ambient (HADOOP_CONF_DIR) configuration
+// into ClientOptions for the given user, as getClientForUser does, so a test
+// can adjust the options (e.g. the datanode dialer) before creating a client.
+func getClientOptionsForUser(t *testing.T, username string) ClientOptions {
 	conf, err := hadoopconf.LoadFromEnvironment()
 	if err != nil || conf == nil {
 		t.Fatal("Couldn't load ambient config", err)
@@ -52,13 +65,7 @@ func getClientForUser(t *testing.T, username string) *Client {
 		options.User = username
 	}
 
-	client, err := NewClient(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cachedClients[username] = client
-	return client
+	return options
 }
 
 // getKerberosClient expects a ccache file for each user mentioned in the tests

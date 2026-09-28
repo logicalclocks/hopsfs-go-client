@@ -50,6 +50,12 @@ type BlockWriter struct {
 	deadline time.Time
 	stream   *blockWriteStream
 	closed   bool
+
+	// setupErr is the last error opening the block on the pipeline and
+	// failedNode the datanode blamed for it; both are cleared on success.
+	// While set, no data has been sent, so the block is safe to retry.
+	setupErr   error
+	failedNode *hdfs.DatanodeInfoProto
 }
 
 // SetDeadline sets the deadline for future Write, Flush, and Close calls. A
@@ -66,11 +72,14 @@ func (bw *BlockWriter) SetDeadline(t time.Time) error {
 
 // Write implements io.Writer.
 //
-// Unlike BlockReader, BlockWriter currently has no ability to recover from
-// write failures (timeouts, datanode failure, etc). Once it returns an error
-// from Write or Close, it may be in an invalid state.
+// BlockWriter has no ability to recover from failures once data has been sent
+// to the pipeline (timeouts, datanode failure mid-stream, etc). Once it
+// returns such an error from Write or Close, it may be in an invalid state.
 //
-// This will hopefully be fixed in a future release.
+// A failure to open the block on the datanode is different: no data has been
+// sent, SetupFailed reports true and FailedDatanode names the node to blame.
+// The owner can then abandon the block with the namenode and allocate a new
+// one on other datanodes, which is what FileWriter does.
 func (bw *BlockWriter) Write(b []byte) (int, error) {
 	var blockFull bool
 	if bw.Offset >= bw.BlockSize {
@@ -97,6 +106,17 @@ func (bw *BlockWriter) Write(b []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+// SetupFailed reports whether the last Write failed before the block was
+// opened on the datanode. Such a failure is safe to retry on a new block.
+func (bw *BlockWriter) SetupFailed() bool {
+	return bw.setupErr != nil
+}
+
+// FailedDatanode returns the datanode blamed for the last setup failure.
+func (bw *BlockWriter) FailedDatanode() *hdfs.DatanodeInfoProto {
+	return bw.failedNode
 }
 
 // Flush flushes any unwritten packets out to the datanode.
@@ -129,7 +149,12 @@ func (bw *BlockWriter) Close() error {
 }
 
 func (bw *BlockWriter) connectNext() error {
-	address := getDatanodeAddress(bw.currentPipeline()[0].GetId(), bw.UseDatanodeHostname)
+	pipeline := bw.currentPipeline()
+	if len(pipeline) == 0 {
+		return bw.setupFailed(errors.New("write failed: block has no datanode locations"), "")
+	}
+
+	address := getDatanodeAddress(pipeline[0].GetId(), bw.UseDatanodeHostname)
 
 	if bw.DialFunc == nil {
 		bw.DialFunc = (&net.Dialer{}).DialContext
@@ -137,29 +162,64 @@ func (bw *BlockWriter) connectNext() error {
 
 	conn, err := bw.DialFunc(context.Background(), "tcp", address)
 	if err != nil {
-		return err
+		return bw.setupFailed(err, "")
 	}
 
 	err = conn.SetDeadline(bw.deadline)
 	if err != nil {
-		return err
+		conn.Close()
+		return bw.setupFailed(err, "")
 	}
 
 	err = bw.writeBlockWriteRequest(conn)
 	if err != nil {
-		return err
+		conn.Close()
+		return bw.setupFailed(err, "")
 	}
 
 	resp, err := readBlockOpResponse(conn)
 	if err != nil {
-		return err
+		conn.Close()
+		return bw.setupFailed(err, "")
 	} else if resp.GetStatus() != hdfs.Status_SUCCESS {
-		return fmt.Errorf("write failed: %s (%s)", resp.GetStatus().String(), resp.GetMessage())
+		conn.Close()
+		return bw.setupFailed(
+			fmt.Errorf("write failed: %s (%s)", resp.GetStatus().String(), resp.GetMessage()),
+			resp.GetFirstBadLink())
 	}
 
+	bw.setupErr = nil
+	bw.failedNode = nil
 	bw.conn = conn
 	bw.stream = newBlockWriteStream(conn, bw.Offset)
 	return nil
+}
+
+// setupFailed records a failure to open the block on the pipeline and returns
+// the error. firstBadLink is the datanode the pipeline blamed (as ip:port),
+// or empty when the failure was with the node we connected to.
+func (bw *BlockWriter) setupFailed(err error, firstBadLink string) error {
+	bw.setupErr = err
+	bw.failedNode = nil
+
+	pipeline := bw.currentPipeline()
+	if len(pipeline) == 0 {
+		return err
+	}
+
+	bw.failedNode = pipeline[0]
+	if firstBadLink != "" {
+		for _, node := range pipeline {
+			id := node.GetId()
+			if firstBadLink == fmt.Sprintf("%s:%d", id.GetIpAddr(), id.GetXferPort()) ||
+				firstBadLink == fmt.Sprintf("%s:%d", id.GetHostName(), id.GetXferPort()) {
+				bw.failedNode = node
+				break
+			}
+		}
+	}
+
+	return err
 }
 
 func (bw *BlockWriter) currentPipeline() []*hdfs.DatanodeInfoProto {
