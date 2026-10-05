@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/colinmarc/hdfs/v2/hadoopconf"
 	hadoop "github.com/colinmarc/hdfs/v2/internal/protocol/hadoop_common"
@@ -105,6 +106,13 @@ type ClientOptions struct {
 	RootCABundle      string
 	ClientCertificate string
 	ClientKey         string
+
+	// Bounds how long connecting to a namenode may take, including the TLS and namenode handshakes.
+	// Zero selects rpc.DefaultDialTimeout; a negative value disables the limit.
+	NamenodeDialTimeout time.Duration
+	// Sets TCP_USER_TIMEOUT on namenode connections on platforms that support it.
+	// Zero selects the default; a negative value disables it.
+	NamenodeTCPUserTimeout time.Duration
 
 	// skipSaslForPrivilegedDatanodePorts implements a strange edge case present
 	// in the official java client. If data.transfer.protection is set but not
@@ -263,6 +271,8 @@ func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress str
 		RootCABundle:                 options.RootCABundle,
 		ClientCertificate:            options.ClientCertificate,
 		ClientKey:                    options.ClientKey,
+		DialTimeout:                  options.NamenodeDialTimeout,
+		TCPUserTimeout:               options.NamenodeTCPUserTimeout,
 	}
 
 	namenodeConn, err := rpc.NewNamenodeConnection(nnConnectionOptions)
