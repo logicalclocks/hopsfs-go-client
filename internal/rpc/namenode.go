@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,8 +33,34 @@ const (
 	standbyExceptionClass      = "org.apache.hadoop.ipc.StandbyException"
 )
 
+// HopsFS throws its subtree lock as the cause of a RetriableException, so the
+// wire class stays RetriableException for older clients and the message
+// starts with SubtreeLockedException's name followed by a colon.
+const (
+	retriableExceptionClass     = "org.apache.hadoop.ipc.RetriableException"
+	subtreeLockedExceptionClass = "org.apache.hadoop.ipc.SubtreeLockedException"
+)
+
 // leaseRenewInterval is a variable so tests can shorten it.
 var leaseRenewInterval = 1 * time.Second
+
+// Retries of a request the namenode answered with RetriableException: the
+// first wait, then per kind the number of retries and the cap of the doubling
+// waits. Ten retries capped at 15 s take 80 to 130 s with the jitter, the
+// span of the Java client's dfs.client.retry.max.attempts. A subtree lock
+// gets thirty retries capped at 60 s, 19 to 31 minutes, past both limits at
+// which the NameNode's MDCleaner reclaims a lock: 10 minutes for a dead
+// NameNode's (dfs.subtree.clean.failed.ops.locks.delay) and 15 for a live
+// NameNode's slow operation (dfs.subtree.clean.slow.ops.locks.delay), so a
+// lock that outlives its operation does not fail the request. Variables so
+// tests can shorten them.
+var (
+	retriableInitialBackoff = 1 * time.Second
+	retriableMaxRetries     = 10
+	retriableMaxBackoff     = 15 * time.Second
+	subtreeLockedMaxRetries = 30
+	subtreeLockedMaxBackoff = 60 * time.Second
+)
 
 const (
 	backoffDuration = 5 * time.Second
@@ -291,20 +319,38 @@ func (c *NamenodeConnection) markFailure(err error) {
 	c.host.lastErrorAt = time.Now()
 }
 
+// jitter spreads d over [3d/4, 5d/4], so clients blocked by the same
+// subtree operation do not retry in lockstep.
+func jitter(d time.Duration) time.Duration {
+	if d < 4 {
+		return d
+	}
+	return d*3/4 + time.Duration(rand.Int63n(int64(d/2)+1))
+}
+
 // Execute performs an rpc call. It does this by sending req over the wire and
 // unmarshaling the result into resp.
+//
+// A RetriableException from the namenode is retried here with exponential
+// backoff, as Hadoop's Java client does. One that wraps a subtree lock, a
+// request resolving a path under a subtree operation (a directory chmod holds
+// the lock for milliseconds, a large move or delete for minutes), gets the
+// longer budget.
 func (c *NamenodeConnection) Execute(method string, req proto.Message, resp proto.Message) error {
 	c.reqLock.Lock()
 	defer c.reqLock.Unlock()
 
-	c.currentRequestID++
-	requestID := c.currentRequestID
-
+	retries := 0
+	backoff := retriableInitialBackoff
 	for {
 		err := c.resolveConnection()
 		if err != nil {
 			return err
 		}
+
+		// A new call id per attempt, as the Java client's retries carry.
+		c.currentRequestID++
+		requestID := c.currentRequestID
 
 		err = c.transport.writeRequest(c.conn, method, requestID, req)
 		if err != nil {
@@ -316,9 +362,26 @@ func (c *NamenodeConnection) Execute(method string, req proto.Message, resp prot
 		if err != nil {
 			if nerr, ok := err.(*NamenodeError); ok {
 				// The namenode answered, so the connection itself is healthy.
-				// Only retry on a standby exception.
-				if nerr.exception == standbyExceptionClass {
+				switch nerr.exception {
+				case standbyExceptionClass:
 					c.markFailure(err)
+					continue
+				case retriableExceptionClass:
+					maxRetries, maxBackoff := retriableMaxRetries, retriableMaxBackoff
+					if strings.HasPrefix(nerr.message, subtreeLockedExceptionClass+":") {
+						maxRetries, maxBackoff = subtreeLockedMaxRetries, subtreeLockedMaxBackoff
+					}
+					if retries >= maxRetries {
+						return err
+					}
+					retries++
+					// Other requests on this connection go on while this one waits.
+					c.reqLock.Unlock()
+					time.Sleep(jitter(backoff))
+					c.reqLock.Lock()
+					if backoff *= 2; backoff > maxBackoff {
+						backoff = maxBackoff
+					}
 					continue
 				}
 				return err
