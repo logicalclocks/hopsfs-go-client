@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,8 +33,34 @@ const (
 	standbyExceptionClass      = "org.apache.hadoop.ipc.StandbyException"
 )
 
+// HopsFS throws its subtree lock as the cause of a RetriableException, so the
+// wire class stays RetriableException for older clients and the message
+// starts with SubtreeLockedException's name followed by a colon.
+const (
+	retriableExceptionClass     = "org.apache.hadoop.ipc.RetriableException"
+	subtreeLockedExceptionClass = "org.apache.hadoop.ipc.SubtreeLockedException"
+)
+
 // leaseRenewInterval is a variable so tests can shorten it.
 var leaseRenewInterval = 1 * time.Second
+
+// Retries of a request the namenode answered with RetriableException: the
+// first wait, then per kind the number of retries and the cap of the doubling
+// waits. Ten retries capped at 15 s wait 105 s before the jitter, 79 to 131 s
+// with it, the backoff of the Java client's dfs.client.retry.max.attempts. A
+// subtree lock gets thirty retries capped at 60 s, 19 to 31 minutes, past
+// both limits at which the NameNode's MDCleaner reclaims a lock: 10 minutes
+// for a dead NameNode's (dfs.subtree.clean.failed.ops.locks.delay) and 15
+// for a live NameNode's slow operation
+// (dfs.subtree.clean.slow.ops.locks.delay.key), so a lock that outlives its
+// operation does not fail the request. Variables so tests can shorten them.
+var (
+	retriableInitialBackoff = 1 * time.Second
+	retriableMaxRetries     = 10
+	retriableMaxBackoff     = 15 * time.Second
+	subtreeLockedMaxRetries = 30
+	subtreeLockedMaxBackoff = 60 * time.Second
+)
 
 const (
 	backoffDuration = 5 * time.Second
@@ -291,22 +319,43 @@ func (c *NamenodeConnection) markFailure(err error) {
 	c.host.lastErrorAt = time.Now()
 }
 
+// jitter spreads d over [3d/4, 5d/4], so clients blocked by the same
+// subtree operation do not retry in lockstep.
+func jitter(d time.Duration) time.Duration {
+	if d < 4 {
+		return d
+	}
+	return d*3/4 + time.Duration(rand.Int63n(int64(d/2)+1))
+}
+
 // Execute performs an rpc call. It does this by sending req over the wire and
 // unmarshaling the result into resp.
+//
+// A RetriableException from the namenode is retried here with exponential
+// backoff, as Hadoop's Java client does. One that wraps a subtree lock, a
+// request resolving a path under a subtree operation (a directory delete or
+// move holds the lock for as long as it runs), gets the longer budget. A
+// Close during a wait ends the retries with the last exception.
 func (c *NamenodeConnection) Execute(method string, req proto.Message, resp proto.Message) error {
 	c.reqLock.Lock()
 	defer c.reqLock.Unlock()
 
+	// One call id and one epoch for every attempt, as the Java client's retries
+	// carry: the namenode's retry cache finds a call it already ran by client
+	// id, call id and epoch.
 	c.currentRequestID++
 	requestID := c.currentRequestID
+	epoch := getRpcEpochSec()
 
+	retries, subtreeLockWaits := 0, 0
+	backoff := retriableInitialBackoff
 	for {
 		err := c.resolveConnection()
 		if err != nil {
 			return err
 		}
 
-		err = c.transport.writeRequest(c.conn, method, requestID, req)
+		err = c.transport.writeRequest(c.conn, method, requestID, epoch, req)
 		if err != nil {
 			c.markFailure(err)
 			continue
@@ -316,9 +365,31 @@ func (c *NamenodeConnection) Execute(method string, req proto.Message, resp prot
 		if err != nil {
 			if nerr, ok := err.(*NamenodeError); ok {
 				// The namenode answered, so the connection itself is healthy.
-				// Only retry on a standby exception.
-				if nerr.exception == standbyExceptionClass {
+				switch nerr.exception {
+				case standbyExceptionClass:
 					c.markFailure(err)
+					continue
+				case retriableExceptionClass:
+					// Each kind has its own count, so a long subtree lock wait
+					// does not use up the retries of what follows it, nor the
+					// reverse.
+					count, maxRetries, maxBackoff := &retries, retriableMaxRetries, retriableMaxBackoff
+					if strings.HasPrefix(nerr.message, subtreeLockedExceptionClass+":") {
+						count, maxRetries, maxBackoff = &subtreeLockWaits, subtreeLockedMaxRetries, subtreeLockedMaxBackoff
+					}
+					if *count >= maxRetries {
+						return err
+					}
+					*count++
+					// Capped before the wait: backoff may have grown to the
+					// other kind's cap.
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+					if !c.waitToRetry(jitter(backoff)) {
+						return err
+					}
+					backoff *= 2
 					continue
 				}
 				return err
@@ -334,6 +405,29 @@ func (c *NamenodeConnection) Execute(method string, req proto.Message, resp prot
 	}
 
 	return nil
+}
+
+// waitToRetry waits d with the request lock released, so other requests on
+// the connection go on, and reports whether the connection is still open.
+// Close can run during the wait and close the socket under the waiting
+// request, which must then not retry: it would reconnect, possibly to
+// another namenode, and run after the client was closed.
+func (c *NamenodeConnection) waitToRetry(d time.Duration) bool {
+	c.reqLock.Unlock()
+	timer := time.NewTimer(d)
+	select {
+	case <-timer.C:
+	case <-c.done:
+		timer.Stop()
+	}
+	c.reqLock.Lock()
+
+	select {
+	case <-c.done:
+		return false
+	default:
+		return true
+	}
 }
 
 // A handshake packet:
@@ -382,7 +476,7 @@ func (c *NamenodeConnection) doNamenodeHandshake() error {
 		}
 	}
 
-	rrh := newRPCRequestHeader(handshakeCallID, c.ClientID)
+	rrh := newRPCRequestHeader(handshakeCallID, getRpcEpochSec(), c.ClientID)
 	cc := newConnectionContext(c.User, c.kerberosRealm)
 	packet, err := makeRPCPacket(rrh, cc)
 	if err != nil {
@@ -533,8 +627,7 @@ func decodePem(certInput []byte) tls.Certificate {
 	return cert
 }
 
-func newRPCRequestHeader(id int32, clientID []byte) *hadoop.RpcRequestHeaderProto {
-	epoch := getRpcEpochSec()
+func newRPCRequestHeader(id int32, epoch int64, clientID []byte) *hadoop.RpcRequestHeaderProto {
 	return &hadoop.RpcRequestHeaderProto{
 		RpcKind:  hadoop.RpcKindProto_RPC_PROTOCOL_BUFFER.Enum(),
 		RpcOp:    hadoop.RpcRequestHeaderProto_RPC_FINAL_PACKET.Enum(),
