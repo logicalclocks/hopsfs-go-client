@@ -82,8 +82,6 @@ func unwrapHopsFSException(err error) string {
 				return illegalArgumentException
 			} else if strings.HasPrefix(message, notALeaderException) {
 				return notALeaderException
-			} else if strings.HasPrefix(message, notALeaderException) {
-				return notALeaderException
 			}
 		} else {
 			return exception
