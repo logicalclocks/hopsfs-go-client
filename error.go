@@ -55,7 +55,7 @@ func unwrapHopsFSException(err error) string {
 
 		if strings.HasPrefix(exception, javaIOException) {
 			if strings.HasPrefix(message, fileNotFoundException) {
-				return fileAlreadyExistsException
+				return fileNotFoundException
 			} else if strings.HasPrefix(message, permissionDeniedException) {
 				return permissionDeniedException
 			} else if strings.HasPrefix(message, pathIsNotEmptyDirException) {
