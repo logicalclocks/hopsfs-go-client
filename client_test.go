@@ -156,6 +156,30 @@ func TestNewWithMultipleNodes(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestNewSingleNamenodeOneConnection(t *testing.T) {
+	conf, err := hadoopconf.LoadFromEnvironment()
+	if err != nil || conf == nil {
+		t.Fatal("Couldn't load ambient config", err)
+	}
+
+	options := ClientOptionsFromConf(conf)
+	options.Addresses = removeEmptyStrings(options.Addresses)[:1]
+	if options.KerberosClient != nil {
+		options.KerberosClient = getKerberosClient(t, "gohdfs1")
+	} else {
+		options.User = "gohdfs1"
+	}
+
+	client, err := newClientInt(options, options.Addresses, options.Addresses[0])
+	require.NoError(t, err)
+
+	assert.Same(t, client.namenode, client.leaderNamenode)
+	dir := "/_test/one_connection"
+	assert.NoError(t, client.MkdirAll(dir, 0777))
+	assert.NoError(t, client.Remove(dir)) // delete goes over the leader connection
+	assert.NoError(t, client.Close())
+}
+
 func removeEmptyStrings(s []string) []string {
 	var r []string
 	for _, str := range s {
