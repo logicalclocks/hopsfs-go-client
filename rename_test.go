@@ -66,3 +66,32 @@ func TestRenameWithoutPermissionForDest(t *testing.T) {
 	err = client2.Rename("/_test/ownedbyother2", "/_test/accessdenied/tomovedest4")
 	assertPathError(t, err, "rename", "/_test/accessdenied/tomovedest4", os.ErrPermission)
 }
+
+func TestRename2NoReplaceDestExists(t *testing.T) {
+	client := getClient(t)
+
+	touch(t, "/_test/rename2src")
+	touch(t, "/_test/rename2dest")
+
+	err := client.Rename2("/_test/rename2src", "/_test/rename2dest", RENAME_NOREPLACE)
+	assertPathError(t, err, "rename2", "/_test/rename2src", os.ErrExist)
+
+	_, err = client.Stat("/_test/rename2src")
+	require.NoError(t, err)
+}
+
+func TestRename2OverwriteDestExists(t *testing.T) {
+	client := getClient(t)
+
+	touch(t, "/_test/rename2src2")
+	touch(t, "/_test/rename2dest2")
+	src, err := client.Stat("/_test/rename2src2")
+	require.NoError(t, err)
+
+	err = client.Rename2("/_test/rename2src2", "/_test/rename2dest2", 0)
+	require.NoError(t, err)
+
+	dest, err := client.Stat("/_test/rename2dest2")
+	require.NoError(t, err)
+	assert.Equal(t, src.(*FileInfo).FileId(), dest.(*FileInfo).FileId())
+}
