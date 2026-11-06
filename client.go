@@ -22,6 +22,7 @@ import (
 	"github.com/colinmarc/hdfs/v2/internal/rpc"
 	"github.com/colinmarc/hdfs/v2/internal/transfer"
 	krb "github.com/jcmturner/gokrb5/v8/client"
+	"google.golang.org/protobuf/proto"
 )
 
 type dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -291,6 +292,7 @@ func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress str
 	leaderNNConnectionOptions.Addresses = []string{leaderAddress}
 	leaderConn, err = rpc.NewNamenodeConnection(leaderNNConnectionOptions)
 	if err != nil {
+		_ = namenodeConn.Close()
 		return nil, err
 	}
 
@@ -479,16 +481,21 @@ func (c *Client) wrapDatanodeDial(dc dialContext, token *hadoop.TokenProto) (dia
 	return dc, nil
 }
 
-// Close terminates all underlying socket connections to remote server.
-func (c *Client) Close() error {
-	err := c.namenode.Close()
-	if err != nil {
-		return err
+// executeWithLeaderFallback sends an rpc call to the client's namenode and,
+// if that namenode answers NotALeaderException, repeats it on the leader.
+// Since HOPSFS-443 every namenode serves delete and rename with quota
+// enabled; a namenode from before it refuses them unless it is the leader,
+// and a client in a mixed-version cluster can meet either.
+func (c *Client) executeWithLeaderFallback(method string, req proto.Message, resp proto.Message) error {
+	err := c.namenode.Execute(method, req, resp)
+	if err != nil && unwrapHopsFSException(err) == notALeaderException {
+		return c.leaderNamenode.Execute(method, req, resp)
 	}
 
-	err = c.leaderNamenode.Close()
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
+}
+
+// Close terminates all underlying socket connections to remote server.
+func (c *Client) Close() error {
+	return errors.Join(c.namenode.Close(), c.leaderNamenode.Close())
 }

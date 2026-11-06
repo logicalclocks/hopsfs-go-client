@@ -30,7 +30,7 @@ func (c *Client) Rename(oldpath, newpath string) error {
 	}
 	resp := &hdfs.Rename2ResponseProto{}
 
-	err = c.leaderNamenode.Execute("rename2", req, resp)
+	err = c.executeWithLeaderFallback("rename2", req, resp)
 	if err != nil {
 		return &os.PathError{"rename", oldpath, interpretException(err)}
 	}
@@ -65,7 +65,7 @@ func (c *Client) Rename2(oldpath, newpath string, options RenameOptions) error {
 
 	resp := &hdfs.Rename2ResponseProto{}
 
-	err = c.leaderNamenode.Execute("rename2", req, resp)
+	err = c.executeWithLeaderFallback("rename2", req, resp)
 	if err != nil {
 		return &os.PathError{"rename2", oldpath, interpretException(err)}
 	}
