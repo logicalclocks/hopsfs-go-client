@@ -160,3 +160,27 @@ func TestLeasesAreRenewedOnlyWhileAFileIsOpenForWriting(t *testing.T) {
 	conn.ReleaseLease()
 	namenode.hangUp()
 }
+
+func TestNewClientIDUniqueAcrossGoroutines(t *testing.T) {
+	const goroutines, perGoroutine = 16, 20000
+	ids := make(chan string, goroutines*perGoroutine)
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				ids <- string(newClientID())
+			}
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	seen := make(map[string]bool, goroutines*perGoroutine)
+	for id := range ids {
+		if seen[id] {
+			t.Fatalf("duplicate client ID %q", id)
+		}
+		seen[id] = true
+	}
+}
