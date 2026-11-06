@@ -292,6 +292,7 @@ func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress str
 	leaderNNConnectionOptions.Addresses = []string{leaderAddress}
 	leaderConn, err = rpc.NewNamenodeConnection(leaderNNConnectionOptions)
 	if err != nil {
+		_ = namenodeConn.Close()
 		return nil, err
 	}
 
@@ -496,14 +497,5 @@ func (c *Client) executeWithLeaderFallback(method string, req proto.Message, res
 
 // Close terminates all underlying socket connections to remote server.
 func (c *Client) Close() error {
-	err := c.namenode.Close()
-	if err != nil {
-		return err
-	}
-
-	err = c.leaderNamenode.Close()
-	if err != nil {
-		return err
-	}
-	return nil
+	return errors.Join(c.namenode.Close(), c.leaderNamenode.Close())
 }
