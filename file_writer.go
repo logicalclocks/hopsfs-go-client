@@ -485,15 +485,21 @@ func (f *FileWriter) Flush() error {
 // for acknowledgements from the datanodes. It is important that Close is called
 // after all data has been written.
 //
-// If the datanodes have acknowledged all writes but not yet to the namenode,
-// it can return ErrReplicating (wrapped in an os.PathError). This indicates
-// that all data has been written, but the lease is still open for the file.
-// It is safe in this case to either ignore the error (and let the lease expire
-// on its own) or to call Close multiple times until it completes without an
-// error. The Java client, for context, always chooses to retry, with
-// exponential backoff.
-func (f *FileWriter) Close() error {
-	err := f.closeInt()
+// If the datanodes have acknowledged all writes but not yet reported them to
+// the namenode, Close retries completing the file with exponential backoff.
+// Close is final: once it returns, the writer no longer renews the file's
+// lease, and after an error every later call returns the same error.
+func (f *FileWriter) Close() (err error) {
+	// As with the Java client's stream, a close that fails still closes the writer. A lease left
+	// counted would keep this connection renewing it for as long as the client lives.
+	defer func() {
+		if err != nil {
+			f.lastError = err
+		}
+		f.releaseLease()
+	}()
+
+	err = f.closeInt()
 	if err != nil {
 		// if the close failed due to the DB throwing
 		// OutOfExtents Exception then we retry the close
@@ -521,9 +527,6 @@ func (f *FileWriter) Close() error {
 
 func (f *FileWriter) closeInt() error {
 	if f.lastError != nil {
-		// A failed writer can never complete the file, so, like the Java client's close, stop
-		// renewing its lease rather than keep this connection renewing for good.
-		f.releaseLease()
 		return f.lastError
 	}
 
@@ -553,10 +556,6 @@ func (f *FileWriter) closeInt() error {
 			// Close the blockWriter, flushing any buffered packets.
 			err := f.closeBlock()
 			if err != nil {
-				// The block writer has dropped its datanode connection, so no retry can complete
-				// the file.
-				f.lastError = err
-				f.releaseLease()
 				return err
 			}
 		}
@@ -588,7 +587,6 @@ func (f *FileWriter) closeInt() error {
 			sleep *= 2
 			continue
 		} else {
-			f.releaseLease()
 			return nil
 		}
 	}

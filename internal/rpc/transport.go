@@ -11,7 +11,7 @@ import (
 var errUnexpectedSequenceNumber = errors.New("unexpected sequence number")
 
 type transport interface {
-	writeRequest(w io.Writer, method string, requestID int32, req proto.Message) error
+	writeRequest(w io.Writer, method string, requestID int32, epoch int64, req proto.Message) error
 	readResponse(r io.Reader, method string, requestID int32, resp proto.Message) error
 }
 
@@ -35,8 +35,8 @@ type basicTransport struct {
 // +-----------------------------------------------------------+
 // |  varint length + Request                                  |
 // +-----------------------------------------------------------+
-func (t *basicTransport) writeRequest(w io.Writer, method string, requestID int32, req proto.Message) error {
-	rrh := newRPCRequestHeader(requestID, t.clientID)
+func (t *basicTransport) writeRequest(w io.Writer, method string, requestID int32, epoch int64, req proto.Message) error {
+	rrh := newRPCRequestHeader(requestID, epoch, t.clientID)
 	rh := newRequestHeader(method)
 
 	reqBytes, err := makeRPCPacket(rrh, rh, req)
