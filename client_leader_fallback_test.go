@@ -155,10 +155,14 @@ func (n *fakeNamenode) methods() []string {
 }
 
 func (n *fakeNamenode) connect(t *testing.T) *rpc.NamenodeConnection {
+	return connectWith(t, n.dial)
+}
+
+func connectWith(t *testing.T, dial func(ctx context.Context, network, address string) (net.Conn, error)) *rpc.NamenodeConnection {
 	conn, err := rpc.NewNamenodeConnection(rpc.NamenodeConnectionOptions{
 		Addresses: []string{"namenode:8020"},
 		User:      "test",
-		DialFunc:  n.dial,
+		DialFunc:  dial,
 	})
 	require.NoError(t, err)
 	return conn
