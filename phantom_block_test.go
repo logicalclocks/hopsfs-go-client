@@ -170,6 +170,8 @@ func TestEmptyFileUnderDBPolicy(t *testing.T) {
 	writer, err := client.Create(name)
 	require.NoError(t, err)
 	if !writer.storeInDB {
+		_ = tryClose(writer)
+		_ = client.Remove(name)
 		t.Skip("file did not get the DB storage policy; cluster root is not DB")
 	}
 

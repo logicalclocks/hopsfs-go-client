@@ -128,8 +128,6 @@ func (c *Client) createFileWithGroup(name string, replication int, blockSize int
 	// which has no timeout and could otherwise outlast the lease.
 	c.namenode.AcquireLease()
 
-	storedInDB := createResp.GetFs().GetStoragePolicy() == dbStoragePolicyID
-
 	var enc *transparentEncryptionInfo
 	if createResp.GetFs().GetFileEncryptionInfo() != nil {
 		enc, err = c.kmsGetKey(createResp.GetFs().GetFileEncryptionInfo())
@@ -139,6 +137,8 @@ func (c *Client) createFileWithGroup(name string, replication int, blockSize int
 			return nil, &os.PathError{"create", name, err}
 		}
 	}
+
+	storedInDB := createResp.GetFs().GetStoragePolicy() == dbStoragePolicyID && enc == nil
 
 	f := &FileWriter{
 		client:          c,
@@ -228,13 +228,16 @@ func (c *Client) Append(name string) (_ *FileWriter, err error) {
 		}
 	}
 
+	storeInDB := appendResp.GetStat().GetStoragePolicy() == dbStoragePolicyID &&
+		appendResp.GetStat().GetLength() == 0 && enc == nil
+
 	f = &FileWriter{
 		client:          c,
 		name:            name,
 		replication:     int(appendResp.Stat.GetBlockReplication()),
 		blockSize:       int64(appendResp.Stat.GetBlocksize()),
 		fileId:          appendResp.Stat.FileId,
-		storeInDB:       appendResp.GetStat().GetStoragePolicy() == dbStoragePolicyID,
+		storeInDB:       storeInDB,
 		smallFileBuffer: []byte{},
 		pos:             *appendResp.GetStat().Length,
 		enc:             enc,
