@@ -45,6 +45,30 @@ func TestRenameDestExists(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRename2NoReplace(t *testing.T) {
+	client := getClient(t)
+
+	touch(t, "/_test/tomove5")
+	touch(t, "/_test/tomove6")
+	baleet(t, "/_test/tomovedest5")
+
+	err := client.Rename2("/_test/tomove5", "/_test/tomovedest5", RENAME_NOREPLACE)
+	require.NoError(t, err)
+
+	err = client.Rename2("/_test/tomove6", "/_test/tomovedest5", RENAME_NOREPLACE)
+	assertPathError(t, err, "rename2", "/_test/tomove6", os.ErrExist)
+
+	_, err = client.Stat("/_test/tomove6")
+	require.NoError(t, err)
+
+	err = client.Rename2("/_test/tomove6", "/_test/tomovedest5", RENAME_OPTION_NONE)
+	require.NoError(t, err)
+
+	fi, err := client.Stat("/_test/tomove6")
+	assert.Nil(t, fi)
+	assertPathError(t, err, "stat", "/_test/tomove6", os.ErrNotExist)
+}
+
 func TestRenameWithoutPermissionForSrc(t *testing.T) {
 	client2 := getClientForUser(t, "gohdfs2")
 

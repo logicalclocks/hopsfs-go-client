@@ -3,12 +3,11 @@
 package rpc
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
-	"time"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -32,12 +31,15 @@ func tlsRecordType(packetLength uint32) bool {
 // Used for client ID generation, below.
 const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
+// newClientID returns 16 random characters. The namenode keys its retry cache on the client ID and
+// call ID, so two connections sharing an ID can get each other's cached responses.
 func newClientID() []byte {
 	id := make([]byte, 16)
-
-	rand.Seed(time.Now().UTC().UnixNano())
+	if _, err := rand.Read(id); err != nil {
+		panic(err)
+	}
 	for i := range id {
-		id[i] = chars[rand.Intn(len(chars))]
+		id[i] = chars[int(id[i])%len(chars)]
 	}
 
 	return id

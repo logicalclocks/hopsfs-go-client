@@ -1,6 +1,7 @@
 package hdfs
 
 import (
+	"os"
 	"syscall"
 	"testing"
 
@@ -31,4 +32,15 @@ func TestInterpretExceptionSubtreeLockIsEBUSY(t *testing.T) {
 func TestInterpretExceptionOtherRetriableExceptionIsReturnedAsIs(t *testing.T) {
 	in := remoteError{exception: "org.apache.hadoop.ipc.RetriableException", message: "NameNode still not started"}
 	assert.Equal(t, in, interpretException(in))
+}
+
+// HopsFS wraps a namenode exception in an IOException whose message starts
+// with the cause's class name.
+func TestInterpretWrappedException(t *testing.T) {
+	wrapped := func(cause string) error {
+		return remoteError{javaIOException, cause + ": details\n\tat org.apache..."}
+	}
+	assert.Equal(t, os.ErrNotExist, interpretException(wrapped(fileNotFoundException)))
+	assert.Equal(t, os.ErrExist, interpretException(wrapped(fileAlreadyExistsException)))
+	assert.Equal(t, os.ErrNotExist, interpretException(remoteError{fileNotFoundException, "x"}))
 }
