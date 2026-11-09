@@ -14,6 +14,9 @@ import (
 
 const MaxSmallFileSize = 1024 * 64
 
+// dbStoragePolicyID is HopsFS's DB block storage policy
+const dbStoragePolicyID = uint32(14)
+
 var ErrReplicating = errors.New("replication in progress")
 
 // IsErrReplicating returns true if the passed error is an os.PathError wrapping
@@ -125,11 +128,6 @@ func (c *Client) createFileWithGroup(name string, replication int, blockSize int
 	// which has no timeout and could otherwise outlast the lease.
 	c.namenode.AcquireLease()
 
-	storedInDB := false
-	if *createResp.Fs.StoragePolicy == uint32(14) {
-		storedInDB = true
-	}
-
 	var enc *transparentEncryptionInfo
 	if createResp.GetFs().GetFileEncryptionInfo() != nil {
 		enc, err = c.kmsGetKey(createResp.GetFs().GetFileEncryptionInfo())
@@ -139,6 +137,8 @@ func (c *Client) createFileWithGroup(name string, replication int, blockSize int
 			return nil, &os.PathError{"create", name, err}
 		}
 	}
+
+	storedInDB := createResp.GetFs().GetStoragePolicy() == dbStoragePolicyID && enc == nil
 
 	f := &FileWriter{
 		client:          c,
@@ -228,13 +228,16 @@ func (c *Client) Append(name string) (_ *FileWriter, err error) {
 		}
 	}
 
+	storeInDB := appendResp.GetStat().GetStoragePolicy() == dbStoragePolicyID &&
+		appendResp.GetStat().GetLength() == 0 && enc == nil
+
 	f = &FileWriter{
 		client:          c,
 		name:            name,
 		replication:     int(appendResp.Stat.GetBlockReplication()),
 		blockSize:       int64(appendResp.Stat.GetBlocksize()),
 		fileId:          appendResp.Stat.FileId,
-		storeInDB:       false,
+		storeInDB:       storeInDB,
 		smallFileBuffer: []byte{},
 		pos:             *appendResp.GetStat().Length,
 		enc:             enc,
@@ -248,12 +251,17 @@ func (c *Client) Append(name string) (_ *FileWriter, err error) {
 		return f, nil
 	}
 
-	//handling appending to phantom block
-	if len(appendResp.GetBlock().Data) > 0 {
+	// Appending to a file stored in the database: the namenode returns its
+	// content in a phantom block, which the writer re-sends with the new data
+	// on complete.
+	if len(block.Data) > 0 {
 		f.storeInDB = true
-		f.smallFileBuffer = appendResp.GetBlock().Data
+		f.smallFileBuffer = block.Data
 		return f, nil
 	}
+
+	// The last block is on a datanode, so the appended data goes there too.
+	f.storeInDB = false
 
 	// Bump the generation stamp for this append, mirroring the Java
 	// DataStreamer's setupPipelineForAppendOrRecovery flow. The NN's
@@ -567,7 +575,8 @@ func (f *FileWriter) closeInt() error {
 		Last:       lastBlock,
 	}
 
-	if f.storeInDB {
+	// Only send data when there is some.
+	if f.storeInDB && len(f.smallFileBuffer) > 0 {
 		completeReq.Data = f.smallFileBuffer
 	}
 

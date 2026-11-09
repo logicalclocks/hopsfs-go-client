@@ -158,3 +158,63 @@ func TestGoClientEmptyFileNoWriteClosesClean(t *testing.T) {
 
 	_ = client.Remove(name)
 }
+
+// An empty file under the DB storage policy must be completed with
+// no data (nil), not with an empty byte slice.
+func TestEmptyFileUnderDBPolicy(t *testing.T) {
+	client := getClient(t)
+	mkdirp(t, "/_test/phantom")
+	const name = "/_test/phantom/empty-db-policy"
+	_ = client.Remove(name)
+
+	writer, err := client.Create(name)
+	require.NoError(t, err)
+	if !writer.storeInDB {
+		_ = tryClose(writer)
+		_ = client.Remove(name)
+		t.Skip("file did not get the DB storage policy; cluster root is not DB")
+	}
+
+	// No Write call at all.
+	require.NoError(t, tryClose(writer), "empty file under DB policy must close cleanly")
+
+	// On a NameNode without the HABLE-241 fix this RPC fails with an NPE if
+	// the client sent an empty Data; with nil Data it is a plain empty file.
+	blocks := blockCountForPath(t, client, name)
+	assert.Equal(t, 0, blocks, "an empty file must have no blocks")
+
+	fi, err := client.Stat(name)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, fi.Size())
+
+	data, err := client.ReadFile(name)
+	require.NoError(t, err)
+	assert.Len(t, data, 0)
+
+	// Appending to the empty file stores the data in the database, as the
+	// Java client does, since the file inherits the DB policy: the namenode
+	// then serves it as a single phantom block carrying the content.
+	writer, err = client.Append(name)
+	require.NoError(t, err)
+	require.True(t, writer.storeInDB, "append to an empty DB-policy file must go to the database")
+	_, err = writer.Write([]byte("x"))
+	require.NoError(t, err)
+	require.NoError(t, tryClose(writer))
+
+	data, err = client.ReadFile(name)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("x"), data)
+
+	locReq := &hdfs.GetBlockLocationsRequestProto{
+		Src:    proto.String(name),
+		Offset: proto.Uint64(0),
+		Length: proto.Uint64(1 << 30),
+	}
+	locResp := &hdfs.GetBlockLocationsResponseProto{}
+	require.NoError(t, client.namenode.Execute("getBlockLocations", locReq, locResp))
+	require.Len(t, locResp.GetLocations().GetBlocks(), 1)
+	assert.Equal(t, []byte("x"), locResp.GetLocations().GetBlocks()[0].GetData(),
+		"the appended data must be served from the database as a phantom block")
+
+	_ = client.Remove(name)
+}
