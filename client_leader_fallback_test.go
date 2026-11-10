@@ -211,11 +211,14 @@ func TestRemoveRepeatsOnTheLeaderWhenTheNamenodeIsNotIt(t *testing.T) {
 }
 
 func TestRenameRepeatsOnTheLeaderWhenTheNamenodeIsNotIt(t *testing.T) {
-	renames := map[string]func(*Client) error{
-		"Rename":  func(c *Client) error { return c.Rename("/d/f", "/d/g") },
-		"Rename2": func(c *Client) error { return c.Rename2("/d/f", "/d/g", RENAME_OPTION_NONE) },
+	renames := map[string]struct {
+		rename    func(*Client) error
+		nonLeader []string
+	}{
+		"Rename":  {func(c *Client) error { return c.Rename("/d/f", "/d/g") }, []string{"getFileInfo", "rename2"}},
+		"Rename2": {func(c *Client) error { return c.Rename2("/d/f", "/d/g", RENAME_OPTION_NONE) }, []string{"rename2"}},
 	}
-	for name, rename := range renames {
+	for name, r := range renames {
 		for form, refusal := range notALeaderRefusals {
 			t.Run(name+"/"+form, func(t *testing.T) {
 				client, nonLeader, leader := twoNamenodes(t,
@@ -227,8 +230,8 @@ func TestRenameRepeatsOnTheLeaderWhenTheNamenodeIsNotIt(t *testing.T) {
 						"rename2": {resp: &hdfs.Rename2ResponseProto{}},
 					})
 
-				require.NoError(t, rename(client))
-				assert.Equal(t, []string{"getFileInfo", "rename2"}, nonLeader.methods())
+				require.NoError(t, r.rename(client))
+				assert.Equal(t, r.nonLeader, nonLeader.methods())
 				assert.Equal(t, []string{"rename2"}, leader.methods())
 			})
 		}
