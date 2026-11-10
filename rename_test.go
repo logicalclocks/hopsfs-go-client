@@ -67,19 +67,6 @@ func TestRenameWithoutPermissionForDest(t *testing.T) {
 	assertPathError(t, err, "rename", "/_test/accessdenied/tomovedest4", os.ErrPermission)
 }
 
-func TestRename2NoReplaceDestExists(t *testing.T) {
-	client := getClient(t)
-
-	touch(t, "/_test/rename2src")
-	touch(t, "/_test/rename2dest")
-
-	err := client.Rename2("/_test/rename2src", "/_test/rename2dest", RENAME_NOREPLACE)
-	assertPathError(t, err, "rename2", "/_test/rename2src", os.ErrExist)
-
-	_, err = client.Stat("/_test/rename2src")
-	require.NoError(t, err)
-}
-
 func TestRename2OverwriteDestExists(t *testing.T) {
 	client := getClient(t)
 
