@@ -21,6 +21,8 @@ const (
 	notReplicatedYetException    = "org.apache.hadoop.hdfs.server.namenode.NotReplicatedYetException"
 	illegalArgumentException     = "org.apache.hadoop.HadoopIllegalArgumentException"
 	notALeaderException          = "org.apache.hadoop.ipc.NotALeaderException"
+	retriableException           = "org.apache.hadoop.ipc.RetriableException"
+	subtreeLockedException       = "org.apache.hadoop.ipc.SubtreeLockedException"
 	javaIOException              = "java.io.IOException"
 )
 
@@ -82,8 +84,6 @@ func unwrapHopsFSException(err error) string {
 				return illegalArgumentException
 			} else if strings.HasPrefix(message, notALeaderException) {
 				return notALeaderException
-			} else if strings.HasPrefix(message, notALeaderException) {
-				return notALeaderException
 			}
 		} else {
 			return exception
@@ -131,6 +131,14 @@ func interpretException(err error) error {
 		return syscall.EIO
 	case notALeaderException:
 		return syscall.EAGAIN
+	case retriableException:
+		// Execute's retries are spent. A path under a subtree operation is
+		// the namenode's answer over a healthy connection, so it gets an
+		// errno of its own instead of passing as an unknown failure.
+		if strings.HasPrefix(err.(Error).Message(), subtreeLockedException+":") {
+			return syscall.EBUSY
+		}
+		return err
 	default:
 		return err
 	}

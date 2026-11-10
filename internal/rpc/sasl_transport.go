@@ -50,7 +50,7 @@ func (t *saslTransport) readResponse(r io.Reader, method string, requestID int32
 			return err
 		}
 
-		err = readRPCPacket(bytes.NewReader(decrypted), rrh, resp)
+		err = readRPCPacket(bytes.NewReader(decrypted), t.maxResponseLength, rrh, resp)
 		if err != nil {
 			return err
 		}
@@ -61,7 +61,7 @@ func (t *saslTransport) readResponse(r io.Reader, method string, requestID int32
 			return fmt.Errorf("unverifiable message from namenode: %s", err)
 		}
 
-		err = readRPCPacket(bytes.NewReader(wrapToken.Payload), rrh, resp)
+		err = readRPCPacket(bytes.NewReader(wrapToken.Payload), t.maxResponseLength, rrh, resp)
 		if err != nil {
 			return err
 		}

@@ -14,6 +14,9 @@ import (
 
 const MaxSmallFileSize = 1024 * 64
 
+// dbStoragePolicyID is HopsFS's DB block storage policy
+const dbStoragePolicyID = uint32(14)
+
 var ErrReplicating = errors.New("replication in progress")
 
 // IsErrReplicating returns true if the passed error is an os.PathError wrapping
@@ -27,8 +30,11 @@ func IsErrReplicating(err error) bool {
 // Writer and Closer, and can only be used for writes. For reads, see
 // FileReader and Client.Open.
 type FileWriter struct {
-	client      *Client
-	name        string
+	client *Client
+	name   string
+	// leaseHeld is true from a successful create or append until complete succeeds, while the namenode
+	// connection must renew this client's lease.
+	leaseHeld   bool
 	replication int
 	blockSize   int64
 	fileId      *uint64
@@ -118,22 +124,23 @@ func (c *Client) createFileWithGroup(name string, replication int, blockSize int
 	if err != nil {
 		return nil, &os.PathError{"create", name, interpretCreateException(err)}
 	}
-
-	storedInDB := false
-	if *createResp.Fs.StoragePolicy == uint32(14) {
-		storedInDB = true
-	}
+	// The namenode granted the lease with the create, so renewal starts before the KMS request,
+	// which has no timeout and could otherwise outlast the lease.
+	c.namenode.AcquireLease()
 
 	var enc *transparentEncryptionInfo
 	if createResp.GetFs().GetFileEncryptionInfo() != nil {
 		enc, err = c.kmsGetKey(createResp.GetFs().GetFileEncryptionInfo())
 		if err != nil {
+			c.namenode.ReleaseLease()
 			_ = c.Remove(name)
 			return nil, &os.PathError{"create", name, err}
 		}
 	}
 
-	return &FileWriter{
+	storedInDB := createResp.GetFs().GetStoragePolicy() == dbStoragePolicyID && enc == nil
+
+	f := &FileWriter{
 		client:          c,
 		name:            name,
 		replication:     replication,
@@ -143,15 +150,31 @@ func (c *Client) createFileWithGroup(name string, replication int, blockSize int
 		smallFileBuffer: []byte{},
 		pos:             0,
 		enc:             enc,
-	}, nil
+		leaseHeld:       true,
+	}
+	return f, nil
 }
 
 // Append opens an existing file in HDFS and returns an io.WriteCloser for
 // writing to it. Because of the way that HDFS writes are buffered and
 // acknowledged asynchronously, it is very important that Close is called after
 // all data has been written.
-func (c *Client) Append(name string) (*FileWriter, error) {
-	_, err := c.getFileInfo(name)
+func (c *Client) Append(name string) (_ *FileWriter, err error) {
+	var f *FileWriter
+	leased := false
+	// A writer that fails after the namenode granted the lease is not returned, so nothing would release it.
+	defer func() {
+		if err == nil {
+			return
+		}
+		if f != nil {
+			f.releaseLease()
+		} else if leased {
+			c.namenode.ReleaseLease()
+		}
+	}()
+
+	_, err = c.getFileInfo(name)
 	if err != nil {
 		return nil, &os.PathError{Op: "append", Path: name, Err: interpretException(err)}
 	}
@@ -193,6 +216,9 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 	if err != nil {
 		return nil, &os.PathError{Op: "append", Path: name, Err: interpretException(err)}
 	}
+	// Granted with the append; counted before the KMS request for the same reason as in create.
+	c.namenode.AcquireLease()
+	leased = true
 
 	var enc *transparentEncryptionInfo
 	if appendResp.GetStat().GetFileEncryptionInfo() != nil {
@@ -202,16 +228,20 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 		}
 	}
 
-	f := &FileWriter{
+	storeInDB := appendResp.GetStat().GetStoragePolicy() == dbStoragePolicyID &&
+		appendResp.GetStat().GetLength() == 0 && enc == nil
+
+	f = &FileWriter{
 		client:          c,
 		name:            name,
 		replication:     int(appendResp.Stat.GetBlockReplication()),
 		blockSize:       int64(appendResp.Stat.GetBlocksize()),
 		fileId:          appendResp.Stat.FileId,
-		storeInDB:       false,
+		storeInDB:       storeInDB,
 		smallFileBuffer: []byte{},
 		pos:             *appendResp.GetStat().Length,
 		enc:             enc,
+		leaseHeld:       true,
 	}
 
 	// This returns nil if there are no blocks (it's an empty file) or if the
@@ -221,12 +251,17 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 		return f, nil
 	}
 
-	//handling appending to phantom block
-	if len(appendResp.GetBlock().Data) > 0 {
+	// Appending to a file stored in the database: the namenode returns its
+	// content in a phantom block, which the writer re-sends with the new data
+	// on complete.
+	if len(block.Data) > 0 {
 		f.storeInDB = true
-		f.smallFileBuffer = appendResp.GetBlock().Data
+		f.smallFileBuffer = block.Data
 		return f, nil
 	}
+
+	// The last block is on a datanode, so the appended data goes there too.
+	f.storeInDB = false
 
 	// Bump the generation stamp for this append, mirroring the Java
 	// DataStreamer's setupPipelineForAppendOrRecovery flow. The NN's
@@ -370,6 +405,19 @@ func (f *FileWriter) Write(b []byte) (int, error) {
 }
 
 func (f *FileWriter) writeInternal(b []byte) (int, error) {
+	// A zero-length write must not allocate a block. Without this guard the
+	// code below calls startNewBlock() -> addBlock on the NameNode before it
+	// looks at len(b); with no bytes to write, BlockWriter.Write (and thus the
+	// datanode connection) is never invoked, leaving a phantom block allocated
+	// at the NameNode with numBytes=0. On a cloud cluster with
+	// numCommittedAllowed>0 the NameNode completes that block as
+	// cloud_upload_pending even though no datanode ever received it, and the
+	// ProvidedBlocksChecker later flags it as data loss. Writing nothing must
+	// be a no-op, matching the Java client (whose DataStreamer allocates the
+	// next block lazily, only when a data packet for it exists).
+	if len(b) == 0 {
+		return 0, nil
+	}
 	if f.blockWriter == nil {
 		err := f.startNewBlock()
 		if err != nil {
@@ -445,15 +493,21 @@ func (f *FileWriter) Flush() error {
 // for acknowledgements from the datanodes. It is important that Close is called
 // after all data has been written.
 //
-// If the datanodes have acknowledged all writes but not yet to the namenode,
-// it can return ErrReplicating (wrapped in an os.PathError). This indicates
-// that all data has been written, but the lease is still open for the file.
-// It is safe in this case to either ignore the error (and let the lease expire
-// on its own) or to call Close multiple times until it completes without an
-// error. The Java client, for context, always chooses to retry, with
-// exponential backoff.
-func (f *FileWriter) Close() error {
-	err := f.closeInt()
+// If the datanodes have acknowledged all writes but not yet reported them to
+// the namenode, Close retries completing the file with exponential backoff.
+// Close is final: once it returns, the writer no longer renews the file's
+// lease, and after an error every later call returns the same error.
+func (f *FileWriter) Close() (err error) {
+	// As with the Java client's stream, a close that fails still closes the writer. A lease left
+	// counted would keep this connection renewing it for as long as the client lives.
+	defer func() {
+		if err != nil {
+			f.lastError = err
+		}
+		f.releaseLease()
+	}()
+
+	err = f.closeInt()
 	if err != nil {
 		// if the close failed due to the DB throwing
 		// OutOfExtents Exception then we retry the close
@@ -521,7 +575,8 @@ func (f *FileWriter) closeInt() error {
 		Last:       lastBlock,
 	}
 
-	if f.storeInDB {
+	// Only send data when there is some.
+	if f.storeInDB && len(f.smallFileBuffer) > 0 {
 		completeReq.Data = f.smallFileBuffer
 	}
 
@@ -546,6 +601,13 @@ func (f *FileWriter) closeInt() error {
 	}
 
 	return &os.PathError{Op: "create", Path: f.name, Err: errors.New("failed to close the file")}
+}
+
+func (f *FileWriter) releaseLease() {
+	if f.leaseHeld {
+		f.leaseHeld = false
+		f.client.namenode.ReleaseLease()
+	}
 }
 
 func (f *FileWriter) startNewBlock() error {

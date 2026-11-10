@@ -5,6 +5,7 @@ package rpc
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"time"
@@ -13,6 +14,20 @@ import (
 )
 
 var errInvalidResponse = errors.New("invalid response from namenode")
+
+// DefaultMaxResponseLength bounds the buffer allocated for one RPC response unless a connection
+// sets its own, as Hadoop's ipc.maximum.response.length (128 MB by default) does. The length
+// comes off the wire, so a peer that is not speaking Hadoop RPC would otherwise make the client
+// allocate up to 4 GB.
+const DefaultMaxResponseLength = 128 << 20
+
+// tlsRecordType reports whether a response length is really the start of a TLS record (content
+// type 20 to 23, then major version 3), which is what a namenode that expects TLS answers to a
+// plaintext client.
+func tlsRecordType(packetLength uint32) bool {
+	contentType, majorVersion := packetLength>>24, (packetLength>>16)&0xff
+	return contentType >= 20 && contentType <= 23 && majorVersion == 3
+}
 
 // Used for client ID generation, below.
 const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -57,11 +72,22 @@ func makeRPCPacket(msgs ...proto.Message) ([]byte, error) {
 	return packet, nil
 }
 
-func readRPCPacket(r io.Reader, msgs ...proto.Message) error {
+// readRPCPacket reads one length-prefixed RPC packet; maxLength of zero selects DefaultMaxResponseLength.
+func readRPCPacket(r io.Reader, maxLength uint32, msgs ...proto.Message) error {
 	var packetLength uint32
 	err := binary.Read(r, binary.BigEndian, &packetLength)
 	if err != nil {
 		return err
+	}
+
+	if maxLength == 0 {
+		maxLength = DefaultMaxResponseLength
+	}
+	if packetLength > maxLength {
+		if tlsRecordType(packetLength) {
+			return fmt.Errorf("%w: the namenode answered with TLS, but this client is not configured for TLS", errInvalidResponse)
+		}
+		return fmt.Errorf("%w: response of %d bytes exceeds the %d byte limit (NamenodeMaxResponseLength)", errInvalidResponse, packetLength, maxLength)
 	}
 
 	packet := make([]byte, packetLength)
