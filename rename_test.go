@@ -45,6 +45,30 @@ func TestRenameDestExists(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRename2NoReplace(t *testing.T) {
+	client := getClient(t)
+
+	touch(t, "/_test/tomove5")
+	touch(t, "/_test/tomove6")
+	baleet(t, "/_test/tomovedest5")
+
+	err := client.Rename2("/_test/tomove5", "/_test/tomovedest5", RENAME_NOREPLACE)
+	require.NoError(t, err)
+
+	err = client.Rename2("/_test/tomove6", "/_test/tomovedest5", RENAME_NOREPLACE)
+	assertPathError(t, err, "rename2", "/_test/tomove6", os.ErrExist)
+
+	_, err = client.Stat("/_test/tomove6")
+	require.NoError(t, err)
+
+	err = client.Rename2("/_test/tomove6", "/_test/tomovedest5", RENAME_OPTION_NONE)
+	require.NoError(t, err)
+
+	fi, err := client.Stat("/_test/tomove6")
+	assert.Nil(t, fi)
+	assertPathError(t, err, "stat", "/_test/tomove6", os.ErrNotExist)
+}
+
 func TestRenameWithoutPermissionForSrc(t *testing.T) {
 	client2 := getClientForUser(t, "gohdfs2")
 
@@ -65,4 +89,20 @@ func TestRenameWithoutPermissionForDest(t *testing.T) {
 
 	err = client2.Rename("/_test/ownedbyother2", "/_test/accessdenied/tomovedest4")
 	assertPathError(t, err, "rename", "/_test/accessdenied/tomovedest4", os.ErrPermission)
+}
+
+func TestRename2OverwriteDestExists(t *testing.T) {
+	client := getClient(t)
+
+	touch(t, "/_test/rename2src2")
+	touch(t, "/_test/rename2dest2")
+	src, err := client.Stat("/_test/rename2src2")
+	require.NoError(t, err)
+
+	err = client.Rename2("/_test/rename2src2", "/_test/rename2dest2", 0)
+	require.NoError(t, err)
+
+	dest, err := client.Stat("/_test/rename2dest2")
+	require.NoError(t, err)
+	assert.Equal(t, src.(*FileInfo).FileId(), dest.(*FileInfo).FileId())
 }

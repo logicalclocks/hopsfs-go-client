@@ -219,7 +219,8 @@ func (bw *BlockWriter) generationTimestamp() int64 {
 // See: https://github.com/apache/hadoop/blob/6314843881b4c67d08215e60293f8b33242b9416/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java#L216
 // And: https://github.com/apache/hadoop/blob/6314843881b4c67d08215e60293f8b33242b9416/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java#L1462
 func (bw *BlockWriter) writeBlockWriteRequest(w io.Writer) error {
-	targets := bw.currentPipeline()[1:]
+	pipeline := bw.currentPipeline()
+	targets := pipeline[1:]
 
 	op := &hdfs.OpWriteBlockProto{
 		Header: &hdfs.ClientOperationHeaderProto{
@@ -241,6 +242,15 @@ func (bw *BlockWriter) writeBlockWriteRequest(w io.Writer) error {
 			Type:             hdfs.ChecksumTypeProto_CHECKSUM_CRC32C.Enum(),
 			BytesPerChecksum: proto.Uint32(outboundChunkSize),
 		},
+	}
+
+	// Name the storage of every pipeline node, as the Java client does: the
+	// NameNode's block token is bound to these storage ids and the DataNode
+	// checks the ids a write names against it. A write that names none is
+	// admitted on the token's block and storage types alone.
+	if ids := bw.Block.GetStorageIDs(); len(ids) == len(pipeline) && len(ids) > 0 {
+		op.StorageId = proto.String(ids[0])
+		op.TargetStorageIds = ids[1:]
 	}
 
 	return writeBlockOpRequest(w, writeBlockOp, op)

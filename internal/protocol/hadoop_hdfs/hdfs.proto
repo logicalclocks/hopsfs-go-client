@@ -716,5 +716,6 @@ message BlockTokenSecretProto {
   repeated AccessModeProto modes = 6;
   repeated StorageTypeProto storageTypes = 7;
   repeated string storageIds = 8;
-  optional bytes handshakeSecret = 9;
+  // Tag 9 is upstream's handshake secret, which HopsFS does not use.
+  reserved 9;
 }

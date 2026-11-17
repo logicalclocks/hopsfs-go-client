@@ -2,7 +2,7 @@ package transfer
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"io"
 	"net"
 	"time"
@@ -67,7 +67,7 @@ func (cr *ChecksumReader) ReadChecksum() ([]byte, error) {
 
 	err := cr.datanodes.lastError()
 	if err != nil {
-		err = errors.New("No available datanodes for block.")
+		err = fmt.Errorf("No available datanodes for block: %w", err)
 	}
 
 	return nil, err

@@ -44,12 +44,12 @@ message DataTransferEncryptorMessageProto {
   optional bytes payload = 2;
   optional string message = 3;
   repeated CipherOptionProto cipherOption = 4;
-  optional HandshakeSecretProto handshakeSecret = 5;
-}
-
-message HandshakeSecretProto {
-  required bytes secret = 1;
-  required string bpid = 2;
+  // Tag 5 is upstream's handshake secret, which HopsFS does not use.
+  reserved 5;
+  // Set by HopsFS DataNodes with status ERROR when the block token was
+  // rejected. This client only mirrors the field: HopsFS protects data
+  // transfer with TLS, so the SASL handshake is not used against it.
+  optional bool accessTokenError = 6;
 }
 
 message BaseHeaderProto {
@@ -123,12 +123,9 @@ message OpWriteBlockProto {
   optional StorageTypeProto storageType = 11 [default = DISK];
   repeated StorageTypeProto targetStorageTypes = 12;
 
-  /**
-   * Hint to the DataNode that the block can be allocated on transient
-   * storage i.e. memory and written to disk lazily. The DataNode is free
-   * to ignore this hint.
-   */
-  optional bool allowLazyPersist = 13 [default = false];
+  // Tag 13 is allowLazyPersist upstream; HopsFS has no lazy persist and
+  // reserves the tag, so nothing is ever sent on it.
+  reserved 13;
   //whether to pin the block, so Balancer won't move it.
   optional bool pinning = 14 [default = false];
   repeated bool targetPinnings = 15;

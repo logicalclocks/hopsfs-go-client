@@ -37,7 +37,7 @@ func delete(c *Client, name string, recursive bool) error {
 	}
 	resp := &hdfs.DeleteResponseProto{}
 
-	err = c.leaderNamenode.Execute("delete", req, resp)
+	err = c.executeWithLeaderFallback("delete", req, resp)
 	if err != nil {
 		return &os.PathError{"remove", name, interpretException(err)}
 	} else if resp.Result == nil {

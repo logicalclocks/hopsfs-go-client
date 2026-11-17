@@ -466,7 +466,11 @@ func TestFileChecksumDeadlineSmallFile(t *testing.T) {
 	file, err := client.Open("/_test/foo.txt")
 	require.NoError(t, err)
 
-	file.SetDeadline(time.Now().Add(100 * time.Millisecond))
+	// The budget covers a NameNode RPC and a DataNode checksum op; on HopsFS
+	// both are slower than on a plain local HDFS (the NameNode goes to the
+	// database and the DataNode consults the cloud store), so the deadline
+	// is well above their tail latencies.
+	file.SetDeadline(time.Now().Add(time.Second))
 	_, err = file.Checksum()
 	//hopsfs skip this test if it failed
 	//due to no checksum support for files
@@ -477,7 +481,7 @@ func TestFileChecksumDeadlineSmallFile(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(time.Second)
 	_, err = file.Checksum()
 	assert.NotNil(t, err)
 }

@@ -73,7 +73,8 @@ func (c *NamenodeConnection) doKerberosHandshake() error {
 			// Switch to SASL RPC handler
 			c.transport = &saslTransport{
 				basicTransport: basicTransport{
-					clientID: c.ClientID,
+					clientID:          c.ClientID,
+					maxResponseLength: c.maxResponseLength,
 				},
 				sessionKey: sessionKey,
 				privacy:    qop == sasl.QopPrivacy,
@@ -138,7 +139,7 @@ func (c *NamenodeConnection) doKerberosHandshake() error {
 }
 
 func (c *NamenodeConnection) writeSaslRequest(req *hadoop.RpcSaslProto) error {
-	rrh := newRPCRequestHeader(saslRpcCallId, c.ClientID)
+	rrh := newRPCRequestHeader(saslRpcCallId, getRpcEpochSec(), c.ClientID)
 	packet, err := makeRPCPacket(rrh, req)
 	if err != nil {
 		return err
@@ -151,7 +152,7 @@ func (c *NamenodeConnection) writeSaslRequest(req *hadoop.RpcSaslProto) error {
 func (c *NamenodeConnection) readSaslResponse(expectedState hadoop.RpcSaslProto_SaslState) (*hadoop.RpcSaslProto, error) {
 	rrh := &hadoop.RpcResponseHeaderProto{}
 	resp := &hadoop.RpcSaslProto{}
-	err := readRPCPacket(c.conn, rrh, resp)
+	err := readRPCPacket(c.conn, c.maxResponseLength, rrh, resp)
 	if err != nil {
 		return nil, err
 	} else if int32(rrh.GetCallId()) != saslRpcCallId {
