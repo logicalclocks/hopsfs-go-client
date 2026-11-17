@@ -3,6 +3,7 @@ package hdfs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -73,6 +74,10 @@ type ClientOptions struct {
 	// datanodes via hostname (which is useful in multi-homed setups) or IP
 	// address, which may be required if DNS isn't available.
 	UseDatanodeHostname bool
+	// RemoteAccess specifies whether the client should connect to the namenode(s)
+	// and datanodes via the external addresses they publish, rather than their
+	// in-cluster addresses.
+	RemoteAccess bool
 	// NamenodeDialFunc is used to connect to the namenodes. If nil, then
 	// (&net.Dialer{}).DialContext is used.
 	NamenodeDialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -208,6 +213,11 @@ func ClientOptionsFromConf(conf hadoopconf.HadoopConf) ClientOptions {
 // NewClient returns a connected Client for the given options, or an error if
 // the client could not be created.
 func NewClient(options ClientOptions) (*Client, error) {
+	// Resolve remote access once here rather than on every namenode/datanode
+	// address lookup: the underlying env read goes through cgo (see getEnv) and
+	// the value is fixed for the lifetime of a client.
+	options.RemoteAccess = remoteAccessEnabled()
+
 	client, err := newClientInt(options, options.Addresses, options.Addresses[0])
 	if err != nil {
 		return nil, err
@@ -229,10 +239,16 @@ func NewClient(options ClientOptions) (*Client, error) {
 	// port onto every NameNode would point the client at ports nothing
 	// listens on.
 	randNNi := rand.Intn(len(nns))
-	nnAddress := net.JoinHostPort(nns[randNNi].GetRpcIpAddress(),
-		strconv.Itoa(int(nns[randNNi].GetRpcPort())))
-	leaderNNAddress := net.JoinHostPort(nns[0].GetRpcIpAddress(),
-		strconv.Itoa(int(nns[0].GetRpcPort())))
+	nnAddress, err := namenodeRpcAddress(nns[randNNi], options.RemoteAccess)
+	if err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	leaderNNAddress, err := namenodeRpcAddress(nns[0], options.RemoteAccess)
+	if err != nil {
+		_ = client.Close()
+		return nil, err
+	}
 	newOptions := options
 	newOptions.Addresses = []string{string(nnAddress)}
 
@@ -243,6 +259,20 @@ func NewClient(options ClientOptions) (*Client, error) {
 	}
 
 	return newClient, nil
+}
+
+func namenodeRpcAddress(nn *hdfs.ActiveNodeProto, remoteAccess bool) (string, error) {
+	if remoteAccess {
+		host := nn.GetExternalRpcHostname()
+		port := nn.GetExternalRpcPort()
+		if host == "" || port == 0 {
+			return "", fmt.Errorf("remote access is enabled but the namenode did not publish an external RPC address (namenode id %d)",
+				nn.GetId())
+		}
+		return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
+	}
+
+	return net.JoinHostPort(nn.GetRpcIpAddress(), strconv.Itoa(int(nn.GetRpcPort()))), nil
 }
 
 func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress string) (*Client, error) {

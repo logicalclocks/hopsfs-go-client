@@ -774,6 +774,8 @@ message ActiveNodeProto {
   optional string httpAddress = 7;
   optional int32 locationDomainId = 8;
   extensions 9 to 9;
+  optional string externalRpcHostname = 10; // public DNS or IP for client RPC
+  optional int32  externalRpcPort     = 11; // external client RPC port
 }
 
 message ActiveNamenodeListRequestProto {

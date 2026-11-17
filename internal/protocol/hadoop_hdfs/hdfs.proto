@@ -76,6 +76,8 @@ message DatanodeIDProto {
   required uint32 infoPort = 5;  // datanode http port
   required uint32 ipcPort = 6;   // ipc server port
   optional uint32 infoSecurePort = 7 [default = 0]; // datanode https port
+  optional string externalHostName = 8;   // public DNS or IP, may differ from hostName
+  optional uint32 externalXferPort = 9;    // external data streaming port
 }
 
 /**

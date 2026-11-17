@@ -28,6 +28,9 @@ type BlockReader struct {
 	// UseDatanodeHostname specifies whether the datanodes should be connected to
 	// via their hostnames (if true) or IP addresses (if false).
 	UseDatanodeHostname bool
+	// RemoteAccess specifies whether the datanodes should be connected to via the
+	// external addresses they publish (if true) or their in-cluster addresses.
+	RemoteAccess bool
 	// DialFunc is used to connect to the datanodes. If nil, then
 	// (&net.Dialer{}).DialContext is used.
 	DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -74,7 +77,11 @@ func (br *BlockReader) Read(b []byte) (int, error) {
 		locs := br.Block.GetLocs()
 		datanodes := make([]string, len(locs))
 		for i, loc := range locs {
-			datanodes[i] = getDatanodeAddress(loc.GetId(), br.UseDatanodeHostname)
+			addr, err := getDatanodeAddress(loc.GetId(), br.UseDatanodeHostname, br.RemoteAccess)
+			if err != nil {
+				return 0, err
+			}
+			datanodes[i] = addr
 		}
 
 		br.datanodes = newDatanodeFailover(datanodes)
