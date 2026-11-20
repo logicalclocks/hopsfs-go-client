@@ -102,6 +102,8 @@ type NamenodeConnection struct {
 	reqLock sync.Mutex
 	done    chan struct{}
 
+	retryBudget time.Duration
+
 	// openWriters counts this client's files under lease; leases are renewed only while it is above zero.
 	openWriters atomic.Int64
 }
@@ -143,6 +145,10 @@ type NamenodeConnectionOptions struct {
 	TCPUserTimeout time.Duration
 	// Bounds the size of one response in bytes; zero selects DefaultMaxResponseLength.
 	MaxResponseLength uint32
+	// Bounds the time one call may spend waiting to retry a RetriableException,
+	// both kinds. Zero keeps the retry counts above; a negative value disables
+	// the retries, so the call returns the namenode's refusal at once.
+	RetryBudget time.Duration
 }
 
 func effectiveTimeout(configured, def time.Duration) time.Duration {
@@ -204,6 +210,7 @@ func NewNamenodeConnection(options NamenodeConnectionOptions) (*NamenodeConnecti
 		transport:      &basicTransport{clientID: clientId, maxResponseLength: options.MaxResponseLength},
 
 		maxResponseLength: options.MaxResponseLength,
+		retryBudget:       options.RetryBudget,
 
 		done: make(chan struct{}),
 	}
@@ -349,6 +356,7 @@ func (c *NamenodeConnection) Execute(method string, req proto.Message, resp prot
 
 	retries, subtreeLockWaits := 0, 0
 	backoff := retriableInitialBackoff
+	start := time.Now()
 	for {
 		err := c.resolveConnection()
 		if err != nil {
@@ -386,7 +394,11 @@ func (c *NamenodeConnection) Execute(method string, req proto.Message, resp prot
 					if backoff > maxBackoff {
 						backoff = maxBackoff
 					}
-					if !c.waitToRetry(jitter(backoff)) {
+					wait := jitter(backoff)
+					if c.retryBudget < 0 || (c.retryBudget > 0 && time.Since(start)+wait > c.retryBudget) {
+						return err
+					}
+					if !c.waitToRetry(wait) {
 						return err
 					}
 					backoff *= 2
