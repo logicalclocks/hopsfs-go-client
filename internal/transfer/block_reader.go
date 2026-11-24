@@ -217,13 +217,16 @@ func (br *BlockReader) connectNext() error {
 
 	err = br.writeBlockReadRequest(conn)
 	if err != nil {
+		conn.Close()
 		return err
 	}
 
 	resp, err := readBlockOpResponse(conn)
 	if err != nil {
+		conn.Close()
 		return err
 	} else if resp.GetStatus() != hdfs.Status_SUCCESS {
+		conn.Close()
 		return fmt.Errorf("read failed: %s (%s)", resp.GetStatus().String(), resp.GetMessage())
 	}
 
@@ -244,6 +247,7 @@ func (br *BlockReader) connectNext() error {
 		checksumTab = nil
 		checksumSize = 0
 	default:
+		conn.Close()
 		return fmt.Errorf("unsupported checksum type: %d", checksumType)
 	}
 
@@ -266,13 +270,14 @@ func (br *BlockReader) connectNext() error {
 		}
 	}
 
-	br.stream = stream
-	br.conn = conn
-	err = br.conn.SetDeadline(br.deadline)
+	err = conn.SetDeadline(br.deadline)
 	if err != nil {
+		conn.Close()
 		return err
 	}
 
+	br.stream = stream
+	br.conn = conn
 	return nil
 }
 
