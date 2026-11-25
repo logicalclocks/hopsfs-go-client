@@ -317,6 +317,15 @@ func (c *NamenodeConnection) handshake(deadline time.Time) error {
 	return err
 }
 
+// dropConn closes a connection that ended while idle, leaving its host
+// eligible for the next dial.
+func (c *NamenodeConnection) dropConn() {
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+}
+
 func (c *NamenodeConnection) markFailure(err error) {
 	if c.conn != nil {
 		c.conn.Close()
@@ -357,19 +366,38 @@ func (c *NamenodeConnection) Execute(method string, req proto.Message, resp prot
 	retries, subtreeLockWaits := 0, 0
 	backoff := retriableInitialBackoff
 	start := time.Now()
+	// A connection left open between calls can be closed by the far side
+	// while idle. That is not the namenode failing, so the call opens one new
+	// connection for it without the host backoff. sent records a request that
+	// went out and got no answer.
+	redialed, sent := false, false
 	for {
+		idle := c.conn != nil
+		if idle && !redialed && !connAlive(c.conn) {
+			c.dropConn()
+			redialed, idle = true, false
+		}
+
 		err := c.resolveConnection()
 		if err != nil {
-			return err
+			return &ConnectionError{Method: method, Sent: sent, Err: err}
 		}
 
 		err = c.transport.writeRequest(c.conn, method, requestID, epoch, req)
 		if err != nil {
+			// A failed write hands the namenode at most part of the request,
+			// which it does not run.
+			if idle && !redialed {
+				c.dropConn()
+				redialed = true
+				continue
+			}
 			c.markFailure(err)
 			continue
 		}
 
-		err = c.transport.readResponse(c.conn, method, requestID, resp)
+		answer := &countingReader{r: c.conn}
+		err = c.transport.readResponse(answer, method, requestID, resp)
 		if err != nil {
 			if nerr, ok := err.(*NamenodeError); ok {
 				// The namenode answered, so the connection itself is healthy.
@@ -408,9 +436,16 @@ func (c *NamenodeConnection) Execute(method string, req proto.Message, resp prot
 			}
 
 			// Anything else (EOF, reset, user timeout, framing error) means
-			// the connection can no longer be trusted.
+			// the connection can no longer be trusted. Only a call that
+			// changes nothing is sent again: the namenode may have run it.
+			sent = true
+			if answer.n == 0 && idle && !redialed && readOnlyMethods[method] {
+				c.dropConn()
+				redialed = true
+				continue
+			}
 			c.markFailure(err)
-			return err
+			return &ConnectionError{Method: method, Sent: true, Err: err}
 		}
 
 		break

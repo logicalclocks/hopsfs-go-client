@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"syscall"
+
+	"github.com/colinmarc/hdfs/v2/internal/rpc"
 )
 
 const (
@@ -25,6 +27,10 @@ const (
 	subtreeLockedException       = "org.apache.hadoop.ipc.SubtreeLockedException"
 	javaIOException              = "java.io.IOException"
 )
+
+// ConnectionError is a namenode call that failed on its connection, not with
+// an answer from the namenode. Sent tells whether the namenode may have run it.
+type ConnectionError = rpc.ConnectionError
 
 // Error represents a remote java exception from an HDFS namenode or datanode.
 type Error interface {

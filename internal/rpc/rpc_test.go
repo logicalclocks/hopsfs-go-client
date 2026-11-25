@@ -90,11 +90,16 @@ type pipeNamenode struct {
 	dials   int
 	written int
 	servers []net.Conn
+	gone    bool
 }
 
 func (n *pipeNamenode) dial(ctx context.Context, network, address string) (net.Conn, error) {
 	client, server := net.Pipe()
 	n.mu.Lock()
+	if n.gone {
+		n.mu.Unlock()
+		return nil, errors.New("connection refused")
+	}
 	n.dials++
 	n.servers = append(n.servers, server)
 	n.mu.Unlock()
@@ -119,9 +124,11 @@ func (n *pipeNamenode) counts() (int, int) {
 	return n.dials, n.written
 }
 
+// hangUp closes every connection and refuses new ones, as a namenode that went away.
 func (n *pipeNamenode) hangUp() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.gone = true
 	for _, server := range n.servers {
 		server.Close()
 	}
