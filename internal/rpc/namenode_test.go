@@ -139,6 +139,39 @@ func TestExecuteGivesUpOnASubtreeLockAfterItsRetries(t *testing.T) {
 	assert.NotNil(t, c.conn)
 }
 
+func TestExecuteWithANegativeRetryBudgetReturnsTheRefusalAtOnce(t *testing.T) {
+	shortRetries(t, 10, 30)
+	for _, answer := range []*NamenodeError{subtreeLocked(), notStarted()} {
+		transport := &answeringTransport{answers: repeat(answer, 100)}
+		c := connectedWith(t, transport)
+		c.retryBudget = -1
+
+		err := execute(c)
+
+		require.Error(t, err)
+		nerr, ok := err.(*NamenodeError)
+		require.True(t, ok)
+		assert.Equal(t, answer.message, nerr.message)
+		assert.Len(t, transport.requestIDs, 1, "one attempt, no retry: %s", answer.message)
+		assert.NotNil(t, c.conn, "a refusal is not a connection failure")
+	}
+}
+
+func TestExecuteStopsRetryingWhenTheNextWaitWouldPassTheBudget(t *testing.T) {
+	shortRetries(t, 10, 30)
+	retriableInitialBackoff, subtreeLockedMaxBackoff = 40*time.Millisecond, time.Second
+	transport := &answeringTransport{answers: repeat(subtreeLocked(), 100)}
+	c := connectedWith(t, transport)
+	c.retryBudget = 100 * time.Millisecond
+
+	start := time.Now()
+	require.Error(t, execute(c))
+
+	// Waits of about 40 and 80 ms (jitter 3/4 to 5/4): the second would end past 100 ms.
+	assert.Len(t, transport.requestIDs, 2, "the first attempt plus the one retry the budget holds")
+	assert.Less(t, time.Since(start), 100*time.Millisecond, "no wait ends past the budget")
+}
+
 func TestExecuteGivesOtherRetriableExceptionsTheShorterBudget(t *testing.T) {
 	shortRetries(t, 2, 5)
 	transport := &answeringTransport{answers: repeat(notStarted(), 100)}

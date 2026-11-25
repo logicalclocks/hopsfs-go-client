@@ -118,6 +118,11 @@ type ClientOptions struct {
 	// when it is opened for reading. Zero selects rpc.DefaultMaxResponseLength (128 MB); a file of
 	// very many blocks may need more.
 	NamenodeMaxResponseLength uint32
+	// Bounds the time one call may spend waiting to retry a RetriableException
+	// from the namenode. Zero keeps the client's retry counts; a negative value
+	// disables the retries, so a call returns the refusal at once (EBUSY for a
+	// subtree lock).
+	NamenodeRetryBudget time.Duration
 
 	// skipSaslForPrivilegedDatanodePorts implements a strange edge case present
 	// in the official java client. If data.transfer.protection is set but not
@@ -279,6 +284,7 @@ func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress str
 		DialTimeout:                  options.NamenodeDialTimeout,
 		TCPUserTimeout:               options.NamenodeTCPUserTimeout,
 		MaxResponseLength:            options.NamenodeMaxResponseLength,
+		RetryBudget:                  options.NamenodeRetryBudget,
 	}
 
 	namenodeConn, err := rpc.NewNamenodeConnection(nnConnectionOptions)
