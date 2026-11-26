@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
+	"strings"
 	"time"
 
 	hdfs "github.com/colinmarc/hdfs/v2/internal/protocol/hadoop_hdfs"
@@ -37,9 +38,26 @@ type BlockReader struct {
 	conn      net.Conn
 	deadline  time.Time
 	closed    bool
+
+	// retryStart is when retryCloudRead first ran since the last successful
+	// connect, zero if it has not.
+	retryStart   time.Time
+	retryBackoff time.Duration
 }
 
 const maxSkip = 65536
+
+const (
+	cloudReadInitialBackoff = 200 * time.Millisecond
+	cloudReadMaxBackoff     = 5 * time.Second
+	cloudReadBudget         = 60 * time.Second
+)
+
+// Replaced by tests, which run the retry on a fake clock.
+var (
+	now   = time.Now
+	sleep = time.Sleep
+)
 
 // SetDeadline sets the deadline for future Read calls. A zero value for t
 // means Read will not time out.
@@ -58,7 +76,8 @@ func (br *BlockReader) SetDeadline(t time.Time) error {
 // In the case that a failure (such as a disconnect) occurs while reading, the
 // BlockReader will failover to another datanode and continue reading
 // transparently. In the case that all the datanodes fail, the error
-// from the most recent attempt will be returned.
+// from the most recent attempt will be returned, unless retryCloudRead
+// tries them again.
 //
 // Any datanode failures are recorded in a global cache, so subsequent reads,
 // even reads for different blocks, will prioritize them lower.
@@ -71,13 +90,7 @@ func (br *BlockReader) Read(b []byte) (int, error) {
 	}
 
 	if br.datanodes == nil {
-		locs := br.Block.GetLocs()
-		datanodes := make([]string, len(locs))
-		for i, loc := range locs {
-			datanodes[i] = getDatanodeAddress(loc.GetId(), br.UseDatanodeHostname)
-		}
-
-		br.datanodes = newDatanodeFailover(datanodes)
+		br.datanodes = newDatanodeFailover(br.datanodeAddresses())
 	}
 
 	if len(br.Block.Data) > 0 {
@@ -92,15 +105,27 @@ func (br *BlockReader) Read(b []byte) (int, error) {
 	}
 
 	// This is the main retry loop.
-	for br.stream != nil || br.datanodes.numRemaining() > 0 {
+	for br.stream != nil || br.datanodes.numRemaining() > 0 || br.retryCloudRead() {
 		// First, we try to connect. If this fails, we can just skip the datanode
 		// and continue.
 		if br.stream == nil {
+			// A retry attempt starts only within the budget, whose last attempt
+			// is at its end, and before the read deadline: an attempt at or after
+			// the deadline could not read anything, and its dial and handshake
+			// are not bounded by the deadline.
+			if !br.retryStart.IsZero() {
+				t := now()
+				if t.After(br.retryStart.Add(cloudReadBudget)) ||
+					(!br.deadline.IsZero() && !t.Before(br.deadline)) {
+					break
+				}
+			}
 			err := br.connectNext()
 			if err != nil {
 				br.datanodes.recordFailure(err)
 				continue
 			}
+			br.retryStart = time.Time{}
 		}
 
 		// Then, try to read. If we fail here after reading some bytes, we return
@@ -201,6 +226,79 @@ func (br *BlockReader) Close() error {
 	return nil
 }
 
+func (br *BlockReader) datanodeAddresses() []string {
+	locs := br.Block.GetLocs()
+	datanodes := make([]string, len(locs))
+	for i, loc := range locs {
+		datanodes[i] = getDatanodeAddress(loc.GetId(), br.UseDatanodeHostname)
+	}
+	return datanodes
+}
+
+// retryCloudRead waits, then gives Read the block's locations again, when
+// the last location failed because a cloud block is not in the object store
+// yet. With async cloud upload, only the DataNode that wrote the block has
+// it until the upload finishes, and the NameNode returns that DataNode as
+// the block's only location. With HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE
+// set, every location is the DataNode load balancer, which may pick any
+// DataNode for a connection, so a new connection may reach the writer, and
+// after the upload any DataNode serves the block. It gives up
+// cloudReadBudget after its first wait since the last successful connect,
+// its last attempt at the end of that budget, or when the next attempt would
+// start at or after the read deadline, whose read would time out at once.
+// Read then returns the last error.
+func (br *BlockReader) retryCloudRead() bool {
+	if getEnv(HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE_ENV) == "" ||
+		br.Block.GetB().GetCloudBucket() == "" ||
+		!isCloudBlockNotVisible(br.datanodes.lastError()) {
+		return false
+	}
+
+	t := now()
+	if br.retryStart.IsZero() {
+		br.retryStart = t
+		br.retryBackoff = cloudReadInitialBackoff
+	}
+	stop := br.retryStart.Add(cloudReadBudget)
+	if !t.Before(stop) {
+		return false
+	}
+
+	wait := br.retryBackoff
+	if wait > stop.Sub(t) {
+		wait = stop.Sub(t)
+	}
+	if !br.deadline.IsZero() && !t.Add(wait).Before(br.deadline) {
+		return false
+	}
+	sleep(wait)
+	br.retryBackoff *= 2
+	if br.retryBackoff > cloudReadMaxBackoff {
+		br.retryBackoff = cloudReadMaxBackoff
+	}
+
+	// Keep the last error, which Read returns if the deadline stops this round
+	// before its first attempt.
+	datanodes := newDatanodeFailover(br.datanodeAddresses())
+	datanodes.err = br.datanodes.lastError()
+	br.datanodes = datanodes
+	return true
+}
+
+// isCloudBlockNotVisible reports whether err is a DataNode's answer for a
+// cloud block that is not in the object store yet: ReplicaNotFoundException
+// before the upload, or the S3 or GCS miss on the .data object between the
+// .meta and .data uploads.
+func isCloudBlockNotVisible(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "ReplicaNotFoundException") ||
+		strings.Contains(msg, "NoSuchKey") ||
+		strings.Contains(msg, "not found in the bucket")
+}
+
 // connectNext pops a datanode from the list based on previous failures, and
 // connects to it.
 func (br *BlockReader) connectNext() error {
@@ -217,13 +315,16 @@ func (br *BlockReader) connectNext() error {
 
 	err = br.writeBlockReadRequest(conn)
 	if err != nil {
+		conn.Close()
 		return err
 	}
 
 	resp, err := readBlockOpResponse(conn)
 	if err != nil {
+		conn.Close()
 		return err
 	} else if resp.GetStatus() != hdfs.Status_SUCCESS {
+		conn.Close()
 		return fmt.Errorf("read failed: %s (%s)", resp.GetStatus().String(), resp.GetMessage())
 	}
 
@@ -244,6 +345,7 @@ func (br *BlockReader) connectNext() error {
 		checksumTab = nil
 		checksumSize = 0
 	default:
+		conn.Close()
 		return fmt.Errorf("unsupported checksum type: %d", checksumType)
 	}
 
@@ -266,13 +368,14 @@ func (br *BlockReader) connectNext() error {
 		}
 	}
 
-	br.stream = stream
-	br.conn = conn
-	err = br.conn.SetDeadline(br.deadline)
+	err = conn.SetDeadline(br.deadline)
 	if err != nil {
+		conn.Close()
 		return err
 	}
 
+	br.stream = stream
+	br.conn = conn
 	return nil
 }
 
